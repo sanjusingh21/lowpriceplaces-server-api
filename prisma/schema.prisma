@@ -1,0 +1,117 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id              Int       @id @default(autoincrement())
+  username        String    @unique
+  password        String
+  role            String    // ADMIN, EDITOR, SEO, SELLER, BUYER
+  phoneNumber     String?
+  whatsappNumber  String?
+  listings        Listing[]
+  inquiries       Inquiry[] @relation("BuyerInquiries")
+  reviews         Review[]
+  messages        Message[]
+  moderatedListings Listing[] @relation("ListingModerator")
+}
+
+model Category {
+  id            Int           @id @default(autoincrement())
+  name          String        @unique
+  slug          String        @unique
+  emoji         String        @default("📁")
+  subCategories SubCategory[]
+  listings      Listing[]
+}
+
+model SubCategory {
+  id          Int       @id @default(autoincrement())
+  name        String
+  slug        String    @unique
+  emoji       String    @default("🔹")
+  categoryId  Int
+  category    Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  listings    Listing[]
+}
+
+model Listing {
+  id              Int          @id @default(autoincrement())
+  title           String
+  description     String
+  price           Float
+  discountPercent Float        @default(0)
+  location        String
+  whatsappNumber  String
+  contactNumber   String
+  imagePath       String?
+  status          String       @default("PENDING") // PENDING, ACTIVE, SOLD, INACTIVE, REJECTED
+  rejectReason    String?
+  createdAt       DateTime     @default(now())
+  sellerId        Int
+  seller          User         @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  categoryId      Int
+  category        Category     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  subCategoryId   Int?
+  subCategory     SubCategory? @relation(fields: [subCategoryId], references: [id], onDelete: SetNull)
+  reviews         Review[]
+  inquiries       Inquiry[]
+  moderatedById   Int?
+  moderatedBy     User?        @relation("ListingModerator", fields: [moderatedById], references: [id], onDelete: SetNull)
+  moderatedAt     DateTime?
+}
+
+model Review {
+  id        Int      @id @default(autoincrement())
+  listingId Int
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId   Int
+  buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  rating    Int
+  comment   String
+  images    String[] // Array of image URLs/paths, native Postgres array
+  videos    String[] // Array of video URLs/paths, native Postgres array
+  createdAt DateTime @default(now())
+}
+
+model Inquiry {
+  id           Int       @id @default(autoincrement())
+  listingId    Int
+  listing      Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId      Int
+  buyer        User      @relation("BuyerInquiries", fields: [buyerId], references: [id], onDelete: Cascade)
+  message      String
+  replyMessage String?
+  status       String    @default("UNREAD") // UNREAD, READ, REPLIED
+  createdAt    DateTime  @default(now())
+  messages     Message[]
+}
+
+model Message {
+  id        Int      @id @default(autoincrement())
+  inquiryId Int
+  inquiry   Inquiry  @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  senderId  Int
+  sender    User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  text      String
+  createdAt DateTime @default(now())
+}
+
+model SEOMeta {
+  id              Int    @id @default(autoincrement())
+  routePath       String @unique // e.g., "/" or "/listing/5"
+  titleTag        String
+  metaDescription String
+  keywords        String
+}
+
+model City {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  emoji String @default("📍")
+}
