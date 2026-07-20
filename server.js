@@ -178,8 +178,13 @@ app.post('/api/auth/google', async (req, res) => {
     // Check if user exists
     let user = await prisma.user.findUnique({ where: { username: email } });
     if (!user) {
+      // Prevent automatic registration without a valid role selection
+      const userRole = role ? role.toUpperCase() : '';
+      if (userRole !== 'BUYER' && userRole !== 'SELLER') {
+        return res.status(400).json({ error: "Account not found. Please register first to choose your account type." });
+      }
+
       // Create new user with Google signup
-      const userRole = (role || 'BUYER').toUpperCase();
       // Generate random password for google account
       const randomPassword = bcrypt.hashSync(Math.random().toString(36), 10);
       user = await prisma.user.create({
