@@ -112,7 +112,8 @@ model SEOMeta {
 }
 
 model City {
-  id    Int    @id @default(autoincrement())
-  name  String @unique
-  emoji String @default("📍")
+  id        Int     @id @default(autoincrement())
+  name      String  @unique
+  emoji     String  @default("📍")
+  imagePath String?
 }

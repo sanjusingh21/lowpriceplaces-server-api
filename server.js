@@ -52,8 +52,8 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limits for videos
 });
 
-// Multer setup for Category images (JPG, JPEG, PNG, WEBP; max 5MB)
-const categoryUpload = multer({
+// Multer setup for general image uploads (JPG, JPEG, PNG, WEBP; max 5MB)
+const imageUpload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|webp/;
@@ -303,7 +303,7 @@ app.get('/api/categories', async (req, res) => {
 });
 
 // Create Category (Admin/Editor Only)
-app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), categoryUpload.single('image'), async (req, res) => {
+app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), async (req, res) => {
   try {
     const { name, emoji } = req.body;
     if (!name) return res.status(400).json({ error: "Category name is required." });
@@ -323,7 +323,7 @@ app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']),
 });
 
 // Update Category (Admin/Editor Only)
-app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), categoryUpload.single('image'), async (req, res) => {
+app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { name, emoji, imagePath } = req.body;
@@ -1219,7 +1219,7 @@ app.get('/api/cities', async (req, res) => {
 });
 
 // 2. Add a New City (Admin Only)
-app.post('/api/cities', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+app.post('/api/cities', authenticateToken, requireRole(['ADMIN']), imageUpload.single('image'), async (req, res) => {
   try {
     const { name, emoji } = req.body;
     if (!name) return res.status(400).json({ error: "City name is required." });
@@ -1228,14 +1228,20 @@ app.post('/api/cities', authenticateToken, requireRole(['ADMIN']), async (req, r
     const existing = await prisma.city.findUnique({ where: { name } });
     if (existing) return res.status(400).json({ error: "City already exists." });
 
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
+
     const city = await prisma.city.create({
       data: {
         name,
-        emoji: emoji || "📍"
+        emoji: emoji || "📍",
+        imagePath
       }
     });
     res.status(201).json(city);
   } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: "A city with this name already exists." });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -1252,18 +1258,28 @@ app.delete('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), async (
 });
 
 // 4. Update a City (Admin Only)
-app.put('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+app.put('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), imageUpload.single('image'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, emoji } = req.body;
+    const { name, emoji, imagePath } = req.body;
     if (!name) return res.status(400).json({ error: "City name is required." });
     
+    const updateData = { name, emoji: emoji || "📍" };
+    if (req.file) {
+      updateData.imagePath = `/uploads/${req.file.filename}`;
+    } else if (imagePath === null || imagePath === "null" || imagePath === "") {
+      updateData.imagePath = null;
+    }
+
     const updated = await prisma.city.update({
       where: { id: parseInt(id, 10) },
-      data: { name, emoji }
+      data: updateData
     });
     res.json(updated);
   } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: "A city with this name already exists." });
+    }
     res.status(500).json({ error: error.message });
   }
 });
