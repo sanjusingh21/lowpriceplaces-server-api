@@ -26,6 +26,7 @@ model Category {
   name          String        @unique
   slug          String        @unique
   emoji         String        @default("📁")
+  imagePath     String?
   subCategories SubCategory[]
   listings      Listing[]
 }

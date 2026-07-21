@@ -52,6 +52,22 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limits for videos
 });
 
+// Multer setup for Category images (JPG, JPEG, PNG, WEBP; max 5MB)
+const categoryUpload = multer({
+  storage: storage,
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|webp/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Invalid file type: Only JPG, JPEG, PNG, and WEBP images are allowed.'));
+    }
+  },
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
 // Authentication Middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -287,35 +303,49 @@ app.get('/api/categories', async (req, res) => {
 });
 
 // Create Category (Admin/Editor Only)
-app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), categoryUpload.single('image'), async (req, res) => {
   try {
     const { name, emoji } = req.body;
     if (!name) return res.status(400).json({ error: "Category name is required." });
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
 
     const category = await prisma.category.create({
-      data: { name, slug, emoji: emoji || "📁" }
+      data: { name, slug, emoji: emoji || "📁", imagePath }
     });
     res.status(201).json(category);
   } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: "A category with this name already exists." });
+    }
     res.status(500).json({ error: error.message });
   }
 });
 
 // Update Category (Admin/Editor Only)
-app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), categoryUpload.single('image'), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const { name, emoji } = req.body;
+    const { name, emoji, imagePath } = req.body;
     if (!name) return res.status(400).json({ error: "Category name is required." });
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
+    const updateData = { name, slug, emoji: emoji || "📁" };
+    if (req.file) {
+      updateData.imagePath = `/uploads/${req.file.filename}`;
+    } else if (imagePath === null || imagePath === "null" || imagePath === "") {
+      updateData.imagePath = null;
+    }
+
     const updated = await prisma.category.update({
       where: { id },
-      data: { name, slug, emoji }
+      data: updateData
     });
     res.json(updated);
   } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: "A category with this name already exists." });
+    }
     res.status(500).json({ error: error.message });
   }
 });
