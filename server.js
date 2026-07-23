@@ -68,6 +68,53 @@ const imageUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
+const { optimizeImage } = require('./utils/imageOptimizer');
+
+const optimizeImagesMiddleware = async (req, res, next) => {
+  try {
+    if (req.file) {
+      const result = await optimizeImage(req.file.path);
+      req.file.path = result.optimized;
+      req.file.filename = path.basename(result.optimized);
+    }
+    if (req.files) {
+      if (Array.isArray(req.files)) {
+        for (let file of req.files) {
+          const result = await optimizeImage(file.path);
+          file.path = result.optimized;
+          file.filename = path.basename(result.optimized);
+        }
+      } else {
+        for (let key in req.files) {
+          for (let file of req.files[key]) {
+            const result = await optimizeImage(file.path);
+            file.path = result.optimized;
+            file.filename = path.basename(result.optimized);
+          }
+        }
+      }
+    }
+    next();
+  } catch (error) {
+    console.error('Image optimization middleware error:', error);
+    next();
+  }
+};
+
+// Distance Calculation Helper (Haversine formula)
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  if (lat1 === null || lon1 === null || lat2 === null || lon2 === null) return null;
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return parseFloat((R * c).toFixed(1)); // return km distance (1 decimal place)
+}
+
 // Authentication Middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -167,6 +214,76 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
       select: { id: true, username: true, role: true, phoneNumber: true, whatsappNumber: true }
     });
     res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Seller Profile of current user
+app.get('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const profile = await prisma.sellerProfile.findUnique({
+      where: { userId: req.user.id }
+    });
+    res.json(profile || {
+      fullName: "",
+      displayName: "",
+      professionalTitle: "",
+      yearsOfExperience: 0,
+      businessCategory: "",
+      aboutSeller: "",
+      email: "",
+      mobileNumber: "",
+      whatsAppNumber: ""
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create/Update Seller Profile of current user
+app.put('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const {
+      fullName,
+      displayName,
+      professionalTitle,
+      yearsOfExperience,
+      businessCategory,
+      aboutSeller,
+      email,
+      mobileNumber,
+      whatsAppNumber
+    } = req.body;
+
+    const profile = await prisma.sellerProfile.upsert({
+      where: { userId: req.user.id },
+      update: {
+        fullName: fullName || "",
+        displayName: displayName || "",
+        professionalTitle: professionalTitle || "",
+        yearsOfExperience: parseInt(yearsOfExperience) || 0,
+        businessCategory: businessCategory || "",
+        aboutSeller: aboutSeller || "",
+        email: email || "",
+        mobileNumber: mobileNumber || null,
+        whatsAppNumber: whatsAppNumber || null
+      },
+      create: {
+        userId: req.user.id,
+        fullName: fullName || "",
+        displayName: displayName || "",
+        professionalTitle: professionalTitle || "",
+        yearsOfExperience: parseInt(yearsOfExperience) || 0,
+        businessCategory: businessCategory || "",
+        aboutSeller: aboutSeller || "",
+        email: email || "",
+        mobileNumber: mobileNumber || null,
+        whatsAppNumber: whatsAppNumber || null
+      }
+    });
+
+    res.json(profile);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -303,7 +420,7 @@ app.get('/api/categories', async (req, res) => {
 });
 
 // Create Category (Admin/Editor Only)
-app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), async (req, res) => {
+app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const { name, emoji } = req.body;
     if (!name) return res.status(400).json({ error: "Category name is required." });
@@ -323,7 +440,7 @@ app.post('/api/categories', authenticateToken, requireRole(['ADMIN', 'EDITOR']),
 });
 
 // Update Category (Admin/Editor Only)
-app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), async (req, res) => {
+app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { name, emoji, imagePath } = req.body;
@@ -406,6 +523,482 @@ app.delete('/api/subcategories/:id', authenticateToken, requireRole(['ADMIN', 'E
     res.status(500).json({ error: error.message });
   }
 });
+// Get nearby stores (filtered by category, sorted by distance)
+app.get('/api/stores', async (req, res) => {
+  try {
+    const { lat, lng, category, page, limit } = req.query;
+    
+    const filter = {};
+    if (category) {
+      filter.category = category;
+    }
+
+    const stores = await prisma.store.findMany({
+      where: filter,
+      include: {
+        reviews: true
+      }
+    });
+
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+
+    const mapped = stores.map(store => {
+      let distance = null;
+      if (!isNaN(userLat) && !isNaN(userLng) && store.latitude && store.longitude) {
+        distance = calculateDistance(userLat, userLng, store.latitude, store.longitude);
+      }
+      
+      const avg = store.reviews.length > 0
+        ? store.reviews.reduce((acc, curr) => acc + curr.rating, 0) / store.reviews.length
+        : store.rating;
+
+      return { 
+        ...store, 
+        distance,
+        averageRating: Number(avg.toFixed(1)),
+        totalReviews: store.reviews.length
+      };
+    });
+
+    if (!isNaN(userLat) && !isNaN(userLng)) {
+      mapped.sort((a, b) => {
+        if (a.distance === null) return 1;
+        if (b.distance === null) return -1;
+        return a.distance - b.distance;
+      });
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    if (!isNaN(pageNum) && !isNaN(limitNum)) {
+      const startIndex = (pageNum - 1) * limitNum;
+      const endIndex = pageNum * limitNum;
+      res.json(mapped.slice(startIndex, endIndex));
+    } else {
+      res.json(mapped);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get nearby services (filtered by type, sorted by distance)
+app.get('/api/services', async (req, res) => {
+  try {
+    const { lat, lng, serviceType, page, limit } = req.query;
+
+    const filter = {};
+    if (serviceType) {
+      filter.serviceType = serviceType;
+    }
+
+    const services = await prisma.service.findMany({
+      where: filter,
+      include: {
+        reviews: true
+      }
+    });
+
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+
+    const mapped = services.map(service => {
+      let distance = null;
+      if (!isNaN(userLat) && !isNaN(userLng) && service.latitude && service.longitude) {
+        distance = calculateDistance(userLat, userLng, service.latitude, service.longitude);
+      }
+
+      const avg = service.reviews.length > 0
+        ? service.reviews.reduce((acc, curr) => acc + curr.rating, 0) / service.reviews.length
+        : service.rating;
+
+      return { 
+        ...service, 
+        distance,
+        averageRating: Number(avg.toFixed(1)),
+        totalReviews: service.reviews.length
+      };
+    });
+
+    if (!isNaN(userLat) && !isNaN(userLng)) {
+      mapped.sort((a, b) => {
+        if (a.distance === null) return 1;
+        if (b.distance === null) return -1;
+        return a.distance - b.distance;
+      });
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    if (!isNaN(pageNum) && !isNaN(limitNum)) {
+      const startIndex = (pageNum - 1) * limitNum;
+      const endIndex = pageNum * limitNum;
+      res.json(mapped.slice(startIndex, endIndex));
+    } else {
+      res.json(mapped);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get a specific store's detail, reviews, and related listings
+app.get('/api/stores/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { lat, lng } = req.query;
+
+    const store = await prisma.store.findUnique({
+      where: { id },
+      include: {
+        reviews: {
+          include: {
+            buyer: {
+              select: { username: true }
+            }
+          },
+          orderBy: {
+            createdAt: 'desc'
+          }
+        }
+      }
+    });
+    if (!store) return res.status(404).json({ error: "Store not found" });
+
+    // Calculate distance
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+    let distance = null;
+    if (!isNaN(userLat) && !isNaN(userLng) && store.latitude && store.longitude) {
+      distance = calculateDistance(userLat, userLng, store.latitude, store.longitude);
+    }
+
+    // Related listings: ACTIVE listings in the same city/location
+    const relatedListings = await prisma.listing.findMany({
+      where: {
+        location: { contains: store.location, mode: 'insensitive' },
+        status: "ACTIVE"
+      },
+      include: {
+        category: true,
+        subCategory: true,
+        reviews: {
+          select: { rating: true }
+        }
+      },
+      take: 6
+    });
+
+    const avg = store.reviews.length > 0
+      ? store.reviews.reduce((acc, curr) => acc + curr.rating, 0) / store.reviews.length
+      : store.rating;
+
+    const enrichedStore = {
+      ...store,
+      distance,
+      averageRating: Number(avg.toFixed(1)),
+      totalReviews: store.reviews.length
+    };
+
+    res.json({ store: enrichedStore, relatedListings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get a specific service's detail, reviews, and related listings
+app.get('/api/services/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { lat, lng } = req.query;
+
+    const service = await prisma.service.findUnique({
+      where: { id },
+      include: {
+        reviews: {
+          include: {
+            buyer: {
+              select: { username: true }
+            }
+          },
+          orderBy: {
+            createdAt: 'desc'
+          }
+        }
+      }
+    });
+    if (!service) return res.status(404).json({ error: "Service not found" });
+
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+    let distance = null;
+    if (!isNaN(userLat) && !isNaN(userLng) && service.latitude && service.longitude) {
+      distance = calculateDistance(userLat, userLng, service.latitude, service.longitude);
+    }
+
+    const relatedListings = await prisma.listing.findMany({
+      where: {
+        location: { contains: service.location, mode: 'insensitive' },
+        status: "ACTIVE"
+      },
+      include: {
+        category: true,
+        subCategory: true,
+        reviews: {
+          select: { rating: true }
+        }
+      },
+      take: 6
+    });
+
+    const avg = service.reviews.length > 0
+      ? service.reviews.reduce((acc, curr) => acc + curr.rating, 0) / service.reviews.length
+      : service.rating;
+
+    const enrichedService = {
+      ...service,
+      distance,
+      averageRating: Number(avg.toFixed(1)),
+      totalReviews: service.reviews.length
+    };
+
+    res.json({ service: enrichedService, relatedListings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create Store (Admin/Editor Only)
+app.post('/api/stores', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
+  try {
+    const { name, category, location, latitude, longitude, rating, contact } = req.body;
+    if (!name) return res.status(400).json({ error: "Store name is required." });
+    if (!category) return res.status(400).json({ error: "Store category is required." });
+    if (!location) return res.status(400).json({ error: "Store location is required." });
+
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const newStore = await prisma.store.create({
+      data: {
+        name,
+        category,
+        imagePath,
+        location,
+        latitude: latitude ? parseFloat(latitude) : null,
+        longitude: longitude ? parseFloat(longitude) : null,
+        rating: rating ? parseFloat(rating) : 5.0,
+        contact: contact || null
+      }
+    });
+    res.status(201).json(newStore);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Store (Admin/Editor Only)
+app.put('/api/stores/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { name, category, location, latitude, longitude, rating, contact, imagePath } = req.body;
+    if (!name) return res.status(400).json({ error: "Store name is required." });
+    if (!category) return res.status(400).json({ error: "Store category is required." });
+    if (!location) return res.status(400).json({ error: "Store location is required." });
+
+    const updateData = {
+      name,
+      category,
+      location,
+      latitude: latitude ? parseFloat(latitude) : null,
+      longitude: longitude ? parseFloat(longitude) : null,
+      rating: rating ? parseFloat(rating) : 5.0,
+      contact: contact || null
+    };
+
+    if (req.file) {
+      updateData.imagePath = `/uploads/${req.file.filename}`;
+    } else if (imagePath === null || imagePath === "null" || imagePath === "") {
+      updateData.imagePath = null;
+    }
+
+    const updatedStore = await prisma.store.update({
+      where: { id },
+      data: updateData
+    });
+    res.json(updatedStore);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete Store (Admin/Editor Only)
+app.delete('/api/stores/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await prisma.store.delete({ where: { id } });
+    res.json({ message: "Store deleted successfully." });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create Service (Admin/Editor Only)
+app.post('/api/services', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
+  try {
+    const { name, serviceType, icon, location, latitude, longitude, rating, contact } = req.body;
+    if (!name) return res.status(400).json({ error: "Service name is required." });
+    if (!serviceType) return res.status(400).json({ error: "Service type is required." });
+    if (!location) return res.status(400).json({ error: "Service location is required." });
+
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const newService = await prisma.service.create({
+      data: {
+        name,
+        serviceType,
+        icon: icon || "🛠️",
+        imagePath,
+        location,
+        latitude: latitude ? parseFloat(latitude) : null,
+        longitude: longitude ? parseFloat(longitude) : null,
+        rating: rating ? parseFloat(rating) : 5.0,
+        contact: contact || null
+      }
+    });
+    res.status(201).json(newService);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Service (Admin/Editor Only)
+app.put('/api/services/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { name, serviceType, icon, location, latitude, longitude, rating, contact, imagePath } = req.body;
+    if (!name) return res.status(400).json({ error: "Service name is required." });
+    if (!serviceType) return res.status(400).json({ error: "Service type is required." });
+    if (!location) return res.status(400).json({ error: "Service location is required." });
+
+    const updateData = {
+      name,
+      serviceType,
+      icon: icon || "🛠️",
+      location,
+      latitude: latitude ? parseFloat(latitude) : null,
+      longitude: longitude ? parseFloat(longitude) : null,
+      rating: rating ? parseFloat(rating) : 5.0,
+      contact: contact || null
+    };
+
+    if (req.file) {
+      updateData.imagePath = `/uploads/${req.file.filename}`;
+    } else if (imagePath === null || imagePath === "null" || imagePath === "") {
+      updateData.imagePath = null;
+    }
+
+    const updatedService = await prisma.service.update({
+      where: { id },
+      data: updateData
+    });
+    res.json(updatedService);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete Service (Admin/Editor Only)
+app.delete('/api/services/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await prisma.service.delete({ where: { id } });
+    res.json({ message: "Service deleted successfully." });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a review to a store
+app.post('/api/stores/:id/reviews', authenticateToken, async (req, res) => {
+  try {
+    const storeId = parseInt(req.params.id);
+    const { rating, comment } = req.body;
+    const buyerId = req.user.id;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: "Rating must be between 1 and 5" });
+    }
+
+    const newReview = await prisma.review.create({
+      data: {
+        storeId,
+        buyerId,
+        rating: parseInt(rating),
+        comment: comment || ""
+      },
+      include: {
+        buyer: {
+          select: { username: true }
+        }
+      }
+    });
+
+    // Update overall average rating in Store model
+    const allReviews = await prisma.review.findMany({
+      where: { storeId }
+    });
+    const avgRating = allReviews.reduce((acc, curr) => acc + curr.rating, 0) / allReviews.length;
+    await prisma.store.update({
+      where: { id: storeId },
+      data: { rating: parseFloat(avgRating.toFixed(1)) }
+    });
+
+    res.status(201).json(newReview);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a review to a service
+app.post('/api/services/:id/reviews', authenticateToken, async (req, res) => {
+  try {
+    const serviceId = parseInt(req.params.id);
+    const { rating, comment } = req.body;
+    const buyerId = req.user.id;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: "Rating must be between 1 and 5" });
+    }
+
+    const newReview = await prisma.review.create({
+      data: {
+        serviceId,
+        buyerId,
+        rating: parseInt(rating),
+        comment: comment || ""
+      },
+      include: {
+        buyer: {
+          select: { username: true }
+        }
+      }
+    });
+
+    const allReviews = await prisma.review.findMany({
+      where: { serviceId }
+    });
+    const avgRating = allReviews.reduce((acc, curr) => acc + curr.rating, 0) / allReviews.length;
+    await prisma.service.update({
+      where: { id: serviceId },
+      data: { rating: parseFloat(avgRating.toFixed(1)) }
+    });
+
+    res.status(201).json(newReview);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 
 // 3. LISTINGS & GLOBAL SEARCH
@@ -413,7 +1006,7 @@ app.delete('/api/subcategories/:id', authenticateToken, requireRole(['ADMIN', 'E
 // Get/Search Listings
 app.get('/api/listings', async (req, res) => {
   try {
-    const { q, categoryId, subCategoryId, minPrice, maxPrice, location, status, discountOnly, sellerId, dateFilter, sortBy } = req.query;
+    const { q, categoryId, subCategoryId, minPrice, maxPrice, location, status, discountOnly, sellerId, dateFilter, sortBy, lat, lng } = req.query;
 
     const filters = {};
 
@@ -541,16 +1134,44 @@ app.get('/api/listings', async (req, res) => {
       };
     });
 
-    res.json(enrichedListings);
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+
+    let mappedListings = enrichedListings.map(l => {
+      let distance = null;
+      if (!isNaN(userLat) && !isNaN(userLng) && l.latitude && l.longitude) {
+        distance = calculateDistance(userLat, userLng, l.latitude, l.longitude);
+      }
+      return { ...l, distance };
+    });
+
+    if (sortBy === 'distance_asc' && !isNaN(userLat) && !isNaN(userLng)) {
+      mappedListings.sort((a, b) => {
+        if (a.distance === null) return 1;
+        if (b.distance === null) return -1;
+        return a.distance - b.distance;
+      });
+    }
+
+    // Paginate manually after sorting by distance or date!
+    const pageNum = parseInt(req.query.page);
+    const limitNum = parseInt(req.query.limit);
+    if (!isNaN(pageNum) && !isNaN(limitNum)) {
+      const startIndex = (pageNum - 1) * limitNum;
+      const endIndex = pageNum * limitNum;
+      res.json(mappedListings.slice(startIndex, endIndex));
+    } else {
+      res.json(mappedListings);
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Create Listing (Seller / Admin / Editor Only)
-app.post('/api/listings', authenticateToken, requireRole(['SELLER', 'ADMIN', 'EDITOR']), upload.array('image', 10), async (req, res) => {
+app.post('/api/listings', authenticateToken, requireRole(['SELLER', 'ADMIN', 'EDITOR']), upload.any(), optimizeImagesMiddleware, async (req, res) => {
   try {
-    const { title, description, price, discountPercent, location, whatsappNumber, contactNumber, categoryId, subCategoryId } = req.body;
+    const { title, description, price, priceMax, listingType, discountPercent, location, whatsappNumber, contactNumber, categoryId, subCategoryId } = req.body;
 
     if (!title || !description || !price || !location || !whatsappNumber || !contactNumber || !categoryId) {
       return res.status(400).json({ error: "Required fields are missing." });
@@ -565,6 +1186,8 @@ app.post('/api/listings', authenticateToken, requireRole(['SELLER', 'ADMIN', 'ED
         title,
         description,
         price: parseFloat(price),
+        priceMax: priceMax ? parseFloat(priceMax) : null,
+        listingType: listingType || "SALES",
         discountPercent: parseFloat(discountPercent || 0),
         location,
         whatsappNumber,
@@ -593,7 +1216,7 @@ app.get('/api/listings/:id', async (req, res) => {
       include: {
         category: true,
         subCategory: true,
-        seller: { select: { id: true, username: true, phoneNumber: true, whatsappNumber: true } },
+        seller: { select: { id: true, username: true, phoneNumber: true, whatsappNumber: true, sellerProfile: true } },
         reviews: {
           include: { buyer: { select: { username: true } } },
           orderBy: { createdAt: 'desc' }
@@ -672,10 +1295,10 @@ app.put('/api/listings/:id/status', authenticateToken, requireRole(['ADMIN', 'ED
 });
 
 // Update Listing Details (Admin/Editor or Seller Owner)
-app.put('/api/listings/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR', 'SELLER']), upload.array('image', 10), async (req, res) => {
+app.put('/api/listings/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR', 'SELLER']), upload.any(), optimizeImagesMiddleware, async (req, res) => {
   try {
     const listingId = parseInt(req.params.id);
-    const { title, description, price, discountPercent, location, whatsappNumber, contactNumber, categoryId, subCategoryId } = req.body;
+    const { title, description, price, priceMax, listingType, discountPercent, location, whatsappNumber, contactNumber, categoryId, subCategoryId } = req.body;
 
     const listing = await prisma.listing.findUnique({ where: { id: listingId } });
     if (!listing) return res.status(404).json({ error: "Listing not found" });
@@ -694,6 +1317,8 @@ app.put('/api/listings/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR', 
     if (title !== undefined) updatedData.title = title;
     if (description !== undefined) updatedData.description = description;
     if (price !== undefined) updatedData.price = parseFloat(price);
+    if (priceMax !== undefined) updatedData.priceMax = priceMax ? parseFloat(priceMax) : null;
+    if (listingType !== undefined) updatedData.listingType = listingType;
     if (discountPercent !== undefined) updatedData.discountPercent = parseFloat(discountPercent);
     if (location !== undefined) updatedData.location = location;
     if (whatsappNumber !== undefined) updatedData.whatsappNumber = whatsappNumber;
@@ -741,7 +1366,7 @@ app.delete('/api/listings/:id', authenticateToken, async (req, res) => {
 // 4. REVIEWS & RATINGS
 
 // Submit Review with Multi-Media (Buyer / Admin / Editor Only)
-app.post('/api/listings/:id/reviews', authenticateToken, requireRole(['BUYER', 'ADMIN', 'EDITOR']), upload.fields([{ name: 'images', maxCount: 5 }, { name: 'videos', maxCount: 2 }]), async (req, res) => {
+app.post('/api/listings/:id/reviews', authenticateToken, requireRole(['BUYER', 'ADMIN', 'EDITOR']), upload.fields([{ name: 'images', maxCount: 5 }, { name: 'videos', maxCount: 2 }]), optimizeImagesMiddleware, async (req, res) => {
   try {
     const listingId = parseInt(req.params.id);
     const { rating, comment } = req.body;
@@ -1219,7 +1844,7 @@ app.get('/api/cities', async (req, res) => {
 });
 
 // 2. Add a New City (Admin Only)
-app.post('/api/cities', authenticateToken, requireRole(['ADMIN']), imageUpload.single('image'), async (req, res) => {
+app.post('/api/cities', authenticateToken, requireRole(['ADMIN']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const { name, emoji } = req.body;
     if (!name) return res.status(400).json({ error: "City name is required." });
@@ -1258,7 +1883,7 @@ app.delete('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), async (
 });
 
 // 4. Update a City (Admin Only)
-app.put('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), imageUpload.single('image'), async (req, res) => {
+app.put('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, emoji, imagePath } = req.body;

@@ -19,6 +19,7 @@ model User {
   reviews         Review[]
   messages        Message[]
   moderatedListings Listing[] @relation("ListingModerator")
+  sellerProfile   SellerProfile?
 }
 
 model Category {
@@ -46,12 +47,16 @@ model Listing {
   title           String
   description     String
   price           Float
+  priceMax        Float?
   discountPercent Float        @default(0)
   location        String
+  latitude        Float?
+  longitude       Float?
   whatsappNumber  String
   contactNumber   String
   imagePath       String?
   status          String       @default("PENDING") // PENDING, ACTIVE, SOLD, INACTIVE, REJECTED
+  listingType     String       @default("SALES") // SALES, SERVICES, SECONDHAND
   rejectReason    String?
   createdAt       DateTime     @default(now())
   sellerId        Int
@@ -69,8 +74,12 @@ model Listing {
 
 model Review {
   id        Int      @id @default(autoincrement())
-  listingId Int
-  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listingId Int?
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  storeId   Int?
+  store     Store?   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  serviceId Int?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
   buyerId   Int
   buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
   rating    Int
@@ -116,4 +125,48 @@ model City {
   name      String  @unique
   emoji     String  @default("📍")
   imagePath String?
+}
+
+model Store {
+  id          Int      @id @default(autoincrement())
+  name        String
+  category    String   // Grocery, Medical, Restaurants, Clothing, Electronics, etc.
+  imagePath   String?
+  location    String
+  latitude    Float?
+  longitude   Float?
+  rating      Float    @default(5.0)
+  contact     String?
+  createdAt   DateTime @default(now())
+  reviews     Review[]
+}
+
+model Service {
+  id          Int      @id @default(autoincrement())
+  name        String
+  serviceType String   // Electrician, Plumber, AC Repair, etc.
+  icon        String   @default("🛠️")
+  imagePath   String?
+  location    String
+  latitude    Float?
+  longitude   Float?
+  rating      Float    @default(5.0)
+  contact     String?
+  createdAt   DateTime @default(now())
+  reviews     Review[]
+}
+
+model SellerProfile {
+  id                Int      @id @default(autoincrement())
+  userId            Int      @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fullName          String
+  displayName       String   // Display Name / Shop Name
+  professionalTitle String
+  yearsOfExperience Int
+  businessCategory  String
+  aboutSeller       String
+  email             String
+  mobileNumber      String?
+  whatsAppNumber    String?
 }
