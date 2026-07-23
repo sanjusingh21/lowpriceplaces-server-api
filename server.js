@@ -1006,12 +1006,16 @@ app.post('/api/services/:id/reviews', authenticateToken, async (req, res) => {
 // Get/Search Listings
 app.get('/api/listings', async (req, res) => {
   try {
-    const { q, categoryId, subCategoryId, minPrice, maxPrice, location, status, discountOnly, sellerId, dateFilter, sortBy, lat, lng } = req.query;
+    const { q, categoryId, subCategoryId, minPrice, maxPrice, location, status, discountOnly, sellerId, dateFilter, sortBy, lat, lng, listingType } = req.query;
 
     const filters = {};
 
     if (sellerId) {
       filters.sellerId = parseInt(sellerId);
+    }
+
+    if (listingType) {
+      filters.listingType = listingType;
     }
 
     // Filter by status (public listings show active, Admin/Editor see all)
