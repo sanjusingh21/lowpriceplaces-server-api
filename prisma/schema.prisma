@@ -37,6 +37,7 @@ model SubCategory {
   name        String
   slug        String    @unique
   emoji       String    @default("🔹")
+  imagePath   String?
   categoryId  Int
   category    Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   listings    Listing[]
@@ -169,4 +170,7 @@ model SellerProfile {
   email             String
   mobileNumber      String?
   whatsAppNumber    String?
+  showWhatsapp      Boolean  @default(true)
+  showPhone         Boolean  @default(true)
+  allowChat         Boolean  @default(true)
 }
