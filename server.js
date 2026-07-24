@@ -1,4 +1,6 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
@@ -10,6 +12,28 @@ const { sendResetEmail } = require('./mailer');
 
 const prisma = new PrismaClient();
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+io.on('connection', (socket) => {
+  socket.on('join_room', (inquiryId) => {
+    if (inquiryId) {
+      socket.join(`inquiry_${inquiryId}`);
+    }
+  });
+
+  socket.on('send_message', (data) => {
+    if (data && data.inquiryId) {
+      io.to(`inquiry_${data.inquiryId}`).emit('receive_message', data);
+    }
+  });
+});
+
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || "super_secret_lowpriceplaces_token_key_777_888";
 
@@ -234,7 +258,10 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       aboutSeller: "",
       email: "",
       mobileNumber: "",
-      whatsAppNumber: ""
+      whatsAppNumber: "",
+      showWhatsapp: true,
+      showPhone: true,
+      allowChat: true
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -253,7 +280,10 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
       aboutSeller,
       email,
       mobileNumber,
-      whatsAppNumber
+      whatsAppNumber,
+      showWhatsapp,
+      showPhone,
+      allowChat
     } = req.body;
 
     const profile = await prisma.sellerProfile.upsert({
@@ -267,7 +297,10 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
         aboutSeller: aboutSeller || "",
         email: email || "",
         mobileNumber: mobileNumber || null,
-        whatsAppNumber: whatsAppNumber || null
+        whatsAppNumber: whatsAppNumber || null,
+        showWhatsapp: showWhatsapp !== false,
+        showPhone: showPhone !== false,
+        allowChat: allowChat !== false
       },
       create: {
         userId: req.user.id,
@@ -279,7 +312,10 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
         aboutSeller: aboutSeller || "",
         email: email || "",
         mobileNumber: mobileNumber || null,
-        whatsAppNumber: whatsAppNumber || null
+        whatsAppNumber: whatsAppNumber || null,
+        showWhatsapp: showWhatsapp !== false,
+        showPhone: showPhone !== false,
+        allowChat: allowChat !== false
       }
     });
 
@@ -479,15 +515,16 @@ app.delete('/api/categories/:id', authenticateToken, requireRole(['ADMIN', 'EDIT
 });
 
 // Create Subcategory (Admin/Editor Only)
-app.post('/api/categories/:categoryId/subcategories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+app.post('/api/categories/:categoryId/subcategories', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const { name, emoji } = req.body;
     const categoryId = parseInt(req.params.categoryId);
     if (!name) return res.status(400).json({ error: "Subcategory name is required." });
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : null;
 
     const subCategory = await prisma.subCategory.create({
-      data: { name, slug, emoji: emoji || "🔹", categoryId }
+      data: { name, slug, emoji: emoji || "🔹", imagePath, categoryId }
     });
     res.status(201).json(subCategory);
   } catch (error) {
@@ -496,16 +533,23 @@ app.post('/api/categories/:categoryId/subcategories', authenticateToken, require
 });
 
 // Update Subcategory (Admin/Editor Only)
-app.put('/api/subcategories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+app.put('/api/subcategories/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR']), imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const { name, emoji } = req.body;
+    const { name, emoji, imagePath } = req.body;
     if (!name) return res.status(400).json({ error: "Subcategory name is required." });
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
+    const updateData = { name, slug, emoji: emoji || "🔹" };
+    if (req.file) {
+      updateData.imagePath = `/uploads/${req.file.filename}`;
+    } else if (imagePath === null || imagePath === "null" || imagePath === "") {
+      updateData.imagePath = null;
+    }
+
     const updated = await prisma.subCategory.update({
       where: { id },
-      data: { name, slug, emoji }
+      data: updateData
     });
     res.json(updated);
   } catch (error) {
@@ -1560,12 +1604,12 @@ app.get('/api/inquiries/buyer', authenticateToken, requireRole(['BUYER', 'ADMIN'
   }
 });
 
-// Reply to Inquiry (Seller Only - Legacy endpoint)
-app.post('/api/inquiries/:id/reply', authenticateToken, requireRole(['SELLER', 'ADMIN']), async (req, res) => {
+// Reply / Send Message in Inquiry Chat Thread (Both Buyer & Seller)
+app.post('/api/inquiries/:id/message', authenticateToken, async (req, res) => {
   try {
     const inquiryId = parseInt(req.params.id);
-    const { replyMessage } = req.body;
-    if (!replyMessage) return res.status(400).json({ error: "Reply message is required." });
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: "Message text is required." });
 
     const inquiry = await prisma.inquiry.findUnique({
       where: { id: inquiryId },
@@ -1573,28 +1617,192 @@ app.post('/api/inquiries/:id/reply', authenticateToken, requireRole(['SELLER', '
     });
 
     if (!inquiry) return res.status(404).json({ error: "Inquiry not found." });
-    if (inquiry.listing.sellerId !== req.user.id && req.user.role !== 'ADMIN') {
-      return res.status(403).json({ error: "Forbidden: You are not the seller of this product." });
+
+    const isBuyer = inquiry.buyerId === req.user.id;
+    const isSeller = inquiry.listing.sellerId === req.user.id;
+    const isAdmin = req.user.role === 'ADMIN';
+
+    if (!isBuyer && !isSeller && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden: You are not a participant in this conversation." });
     }
 
-    // Insert into Message table
-    await prisma.message.create({
+    const newMessage = await prisma.message.create({
       data: {
         inquiryId,
         senderId: req.user.id,
-        text: replyMessage
+        text: text.trim()
+      },
+      include: {
+        sender: { select: { id: true, username: true, role: true } }
       }
     });
 
-    const updatedInquiry = await prisma.inquiry.update({
+    // Update status on inquiry
+    await prisma.inquiry.update({
       where: { id: inquiryId },
       data: {
-        replyMessage,
-        status: "REPLIED"
+        status: isSeller ? "REPLIED" : "UNREAD"
       }
     });
 
-    res.json(updatedInquiry);
+    res.status(201).json(newMessage);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Start or Get existing Direct Chat Session for a product listing
+app.post('/api/chats/start', authenticateToken, async (req, res) => {
+  try {
+    const { listingId, initialMessage } = req.body;
+    if (!listingId) return res.status(400).json({ error: "Listing ID is required." });
+
+    const listing = await prisma.listing.findUnique({
+      where: { id: parseInt(listingId) },
+      include: { seller: true }
+    });
+
+    if (!listing) return res.status(404).json({ error: "Listing not found." });
+    if (listing.sellerId === req.user.id) {
+      return res.status(400).json({ error: "You cannot start a chat with yourself on your own listing." });
+    }
+
+    // Check if an inquiry already exists between this buyer and listing
+    let inquiry = await prisma.inquiry.findFirst({
+      where: {
+        listingId: listing.id,
+        buyerId: req.user.id
+      },
+      include: {
+        buyer: { select: { id: true, username: true } },
+        listing: {
+          select: {
+            id: true,
+            title: true,
+            price: true,
+            imagePath: true,
+            sellerId: true,
+            seller: { select: { id: true, username: true, sellerProfile: true } }
+          }
+        },
+        messages: {
+          include: {
+            sender: { select: { id: true, username: true, role: true } }
+          },
+          orderBy: { createdAt: 'asc' }
+        }
+      }
+    });
+
+    if (!inquiry) {
+      const firstMsgText = initialMessage && initialMessage.trim() ? initialMessage.trim() : `Hi! Is "${listing.title}" available?`;
+      inquiry = await prisma.inquiry.create({
+        data: {
+          listingId: listing.id,
+          buyerId: req.user.id,
+          message: firstMsgText,
+          messages: {
+            create: {
+              senderId: req.user.id,
+              text: firstMsgText
+            }
+          }
+        },
+        include: {
+          buyer: { select: { id: true, username: true } },
+          listing: {
+            select: {
+              id: true,
+              title: true,
+              price: true,
+              imagePath: true,
+              sellerId: true,
+              seller: { select: { id: true, username: true, sellerProfile: true } }
+            }
+          },
+          messages: {
+            include: {
+              sender: { select: { id: true, username: true, role: true } }
+            },
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      });
+    }
+
+    res.json(inquiry);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get All Active Chats for the Logged In User
+app.get('/api/chats/all', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const inquiries = await prisma.inquiry.findMany({
+      where: {
+        OR: [
+          { buyerId: userId },
+          { listing: { sellerId: userId } }
+        ]
+      },
+      include: {
+        buyer: { select: { id: true, username: true } },
+        listing: {
+          select: {
+            id: true,
+            title: true,
+            price: true,
+            imagePath: true,
+            sellerId: true,
+            seller: { select: { id: true, username: true, sellerProfile: true } }
+          }
+        },
+        messages: {
+          include: {
+            sender: { select: { id: true, username: true, role: true } }
+          },
+          orderBy: { createdAt: 'asc' }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const formatted = inquiries.map(inq => {
+      let msgs = [...inq.messages];
+      if (msgs.length === 0) {
+        msgs.push({
+          id: `legacy-buyer-${inq.id}`,
+          inquiryId: inq.id,
+          senderId: inq.buyerId,
+          sender: { id: inq.buyerId, username: inq.buyer?.username || 'Buyer', role: 'BUYER' },
+          text: inq.message,
+          createdAt: inq.createdAt
+        });
+        if (inq.replyMessage) {
+          msgs.push({
+            id: `legacy-seller-${inq.id}`,
+            inquiryId: inq.id,
+            senderId: inq.listing?.sellerId,
+            sender: { id: inq.listing?.sellerId, username: inq.listing?.seller?.username || 'Seller', role: 'SELLER' },
+            text: inq.replyMessage,
+            createdAt: inq.createdAt
+          });
+        }
+      }
+      const otherUser = inq.buyerId === userId 
+        ? { id: inq.listing?.sellerId, name: inq.listing?.seller?.sellerProfile?.displayName || inq.listing?.seller?.username?.split('@')[0] || 'Seller', role: 'SELLER' }
+        : { id: inq.buyerId, name: inq.buyer?.username?.split('@')[0] || 'Buyer', role: 'BUYER' };
+
+      return {
+        ...inq,
+        otherUser,
+        messages: msgs
+      };
+    });
+
+    res.json(formatted);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1641,6 +1849,9 @@ app.post('/api/inquiries/:id/messages', authenticateToken, async (req, res) => {
         ...(isSeller ? { replyMessage: text } : {})
       }
     });
+
+    // Emit real-time Socket.IO message
+    io.to(`inquiry_${inquiryId}`).emit('receive_message', newMessage);
 
     res.status(201).json(newMessage);
   } catch (error) {
@@ -1914,6 +2125,6 @@ app.put('/api/cities/:id', authenticateToken, requireRole(['ADMIN']), imageUploa
 });
 
 // Start Server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`lowpriceplaces API Server running on port ${PORT}`);
 });
