@@ -382,6 +382,58 @@ app.post('/api/auth/google', async (req, res) => {
   }
 });
 
+// Switch role dynamically
+app.put('/api/auth/switch-role', authenticateToken, async (req, res) => {
+  try {
+    const { role } = req.body;
+    if (role !== 'BUYER' && role !== 'SELLER') {
+      return res.status(400).json({ error: "Invalid role. Must be BUYER or SELLER." });
+    }
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { role }
+    });
+    
+    // Also ensure seller profile exists if switching to SELLER
+    if (role === 'SELLER') {
+      const existingProfile = await prisma.sellerProfile.findUnique({
+        where: { userId: req.user.id }
+      });
+      if (!existingProfile) {
+        await prisma.sellerProfile.create({
+          data: {
+            userId: req.user.id,
+            fullName: req.user.username.split('@')[0],
+            displayName: req.user.username.split('@')[0] + " Shop",
+            professionalTitle: "Independent Seller",
+            yearsOfExperience: 1,
+            businessCategory: "General",
+            email: req.user.username,
+            aboutSeller: "A new seller on lowpriceplaces.",
+            showWhatsapp: true,
+            showPhone: true,
+            allowChat: true
+          }
+        });
+      }
+    }
+
+    const token = jwt.sign({ id: updatedUser.id, username: updatedUser.username, role: updatedUser.role }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({
+      token,
+      user: {
+        id: updatedUser.id,
+        username: updatedUser.username,
+        role: updatedUser.role,
+        phoneNumber: updatedUser.phoneNumber,
+        whatsappNumber: updatedUser.whatsappNumber
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Forgot Password - Send Reset Link
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
@@ -1499,31 +1551,32 @@ app.post('/api/inquiries', authenticateToken, requireRole(['BUYER', 'ADMIN']), a
 // Get Inquiries Sent to a Seller (Seller dashboard leads)
 app.get('/api/inquiries/seller', authenticateToken, requireRole(['SELLER', 'ADMIN']), async (req, res) => {
   try {
+    const userId = req.user.id;
     const inquiries = await prisma.inquiry.findMany({
       where: {
-        listing: { sellerId: req.user.id }
+        listing: { sellerId: userId }
       },
       include: {
-        buyer: { select: { username: true, phoneNumber: true, whatsappNumber: true } },
+        buyer: { select: { id: true, username: true, phoneNumber: true, whatsappNumber: true } },
         listing: { select: { id: true, title: true, price: true, sellerId: true } },
         messages: {
           include: {
-            sender: { select: { username: true, role: true } }
+            sender: { select: { id: true, username: true, role: true } }
           },
-          orderBy: { createdAt: 'asc' }
+          orderBy: { createdAt: 'desc' },
+          take: 1
         }
-      },
-      orderBy: { createdAt: 'desc' }
+      }
     });
 
-    const formatted = inquiries.map(inq => {
+    const formatted = await Promise.all(inquiries.map(async (inq) => {
       let msgs = [...inq.messages];
       if (msgs.length === 0) {
         msgs.push({
           id: `legacy-buyer-${inq.id}`,
           inquiryId: inq.id,
           senderId: inq.buyerId,
-          sender: { username: inq.buyer?.username || 'Buyer', role: 'BUYER' },
+          sender: { id: inq.buyerId, username: inq.buyer?.username || 'Buyer', role: 'BUYER' },
           text: inq.message,
           createdAt: inq.createdAt
         });
@@ -1531,14 +1584,37 @@ app.get('/api/inquiries/seller', authenticateToken, requireRole(['SELLER', 'ADMI
           msgs.push({
             id: `legacy-seller-${inq.id}`,
             inquiryId: inq.id,
-            senderId: req.user.id,
-            sender: { username: req.user.username, role: 'SELLER' },
+            senderId: userId,
+            sender: { id: userId, username: req.user.username, role: 'SELLER' },
             text: inq.replyMessage,
             createdAt: inq.createdAt
           });
         }
       }
-      return { ...inq, messages: msgs };
+
+      const latestMessage = msgs[msgs.length - 1];
+
+      // Calculate unread count (messages sent by other user in this conversation)
+      const unreadCount = inq.status === "READ" ? 0 : await prisma.message.count({
+        where: {
+          inquiryId: inq.id,
+          senderId: { not: userId }
+        }
+      });
+
+      return {
+        ...inq,
+        latestMessage,
+        unreadCount,
+        messages: [latestMessage]
+      };
+    }));
+
+    // Sort by latest message timestamp DESC
+    formatted.sort((a, b) => {
+      const timeA = new Date(a.latestMessage?.createdAt || a.createdAt).getTime();
+      const timeB = new Date(b.latestMessage?.createdAt || b.createdAt).getTime();
+      return timeB - timeA;
     });
 
     res.json(formatted);
@@ -1550,37 +1626,38 @@ app.get('/api/inquiries/seller', authenticateToken, requireRole(['SELLER', 'ADMI
 // Get Inquiries Sent by a Buyer (Buyer dashboard history)
 app.get('/api/inquiries/buyer', authenticateToken, requireRole(['BUYER', 'ADMIN']), async (req, res) => {
   try {
+    const userId = req.user.id;
     const inquiries = await prisma.inquiry.findMany({
-      where: { buyerId: req.user.id },
+      where: { buyerId: userId },
       include: {
-        buyer: { select: { username: true } },
+        buyer: { select: { id: true, username: true } },
         listing: {
           select: {
             id: true,
             title: true,
             price: true,
             sellerId: true,
-            seller: { select: { username: true, phoneNumber: true, whatsappNumber: true } }
+            seller: { select: { id: true, username: true, phoneNumber: true, whatsappNumber: true } }
           }
         },
         messages: {
           include: {
-            sender: { select: { username: true, role: true } }
+            sender: { select: { id: true, username: true, role: true } }
           },
-          orderBy: { createdAt: 'asc' }
+          orderBy: { createdAt: 'desc' },
+          take: 1
         }
-      },
-      orderBy: { createdAt: 'desc' }
+      }
     });
 
-    const formatted = inquiries.map(inq => {
+    const formatted = await Promise.all(inquiries.map(async (inq) => {
       let msgs = [...inq.messages];
       if (msgs.length === 0) {
         msgs.push({
           id: `legacy-buyer-${inq.id}`,
           inquiryId: inq.id,
           senderId: inq.buyerId,
-          sender: { username: req.user.username, role: 'BUYER' },
+          sender: { id: inq.buyerId, username: req.user.username, role: 'BUYER' },
           text: inq.message,
           createdAt: inq.createdAt
         });
@@ -1589,13 +1666,36 @@ app.get('/api/inquiries/buyer', authenticateToken, requireRole(['BUYER', 'ADMIN'
             id: `legacy-seller-${inq.id}`,
             inquiryId: inq.id,
             senderId: inq.listing.sellerId,
-            sender: { username: inq.listing.seller?.username || 'Seller', role: 'SELLER' },
+            sender: { id: inq.listing.sellerId, username: inq.listing.seller?.username || 'Seller', role: 'SELLER' },
             text: inq.replyMessage,
             createdAt: inq.createdAt
           });
         }
       }
-      return { ...inq, messages: msgs };
+
+      const latestMessage = msgs[msgs.length - 1];
+
+      // Calculate unread count (messages sent by other user in this conversation)
+      const unreadCount = inq.status === "READ" ? 0 : await prisma.message.count({
+        where: {
+          inquiryId: inq.id,
+          senderId: { not: userId }
+        }
+      });
+
+      return {
+        ...inq,
+        latestMessage,
+        unreadCount,
+        messages: [latestMessage]
+      };
+    }));
+
+    // Sort by latest message timestamp DESC
+    formatted.sort((a, b) => {
+      const timeA = new Date(a.latestMessage?.createdAt || a.createdAt).getTime();
+      const timeB = new Date(b.latestMessage?.createdAt || b.createdAt).getTime();
+      return timeB - timeA;
     });
 
     res.json(formatted);
@@ -1748,7 +1848,7 @@ app.get('/api/chats/all', authenticateToken, async (req, res) => {
         ]
       },
       include: {
-        buyer: { select: { id: true, username: true } },
+        buyer: { select: { id: true, username: true, phoneNumber: true, whatsappNumber: true } },
         listing: {
           select: {
             id: true,
@@ -1756,20 +1856,20 @@ app.get('/api/chats/all', authenticateToken, async (req, res) => {
             price: true,
             imagePath: true,
             sellerId: true,
-            seller: { select: { id: true, username: true, sellerProfile: true } }
+            seller: { select: { id: true, username: true, phoneNumber: true, whatsappNumber: true, sellerProfile: true } }
           }
         },
         messages: {
           include: {
             sender: { select: { id: true, username: true, role: true } }
           },
-          orderBy: { createdAt: 'asc' }
+          orderBy: { createdAt: 'desc' },
+          take: 1
         }
-      },
-      orderBy: { createdAt: 'desc' }
+      }
     });
 
-    const formatted = inquiries.map(inq => {
+    const formatted = await Promise.all(inquiries.map(async (inq) => {
       let msgs = [...inq.messages];
       if (msgs.length === 0) {
         msgs.push({
@@ -1791,18 +1891,108 @@ app.get('/api/chats/all', authenticateToken, async (req, res) => {
           });
         }
       }
-      const otherUser = inq.buyerId === userId 
-        ? { id: inq.listing?.sellerId, name: inq.listing?.seller?.sellerProfile?.displayName || inq.listing?.seller?.username?.split('@')[0] || 'Seller', role: 'SELLER' }
-        : { id: inq.buyerId, name: inq.buyer?.username?.split('@')[0] || 'Buyer', role: 'BUYER' };
+
+      const latestMessage = msgs[msgs.length - 1];
+
+      // Calculate unread count (messages sent by other user in this conversation)
+      const unreadCount = inq.status === "READ" ? 0 : await prisma.message.count({
+        where: {
+          inquiryId: inq.id,
+          senderId: { not: userId }
+        }
+      });
+
+      const otherUserRaw = inq.buyerId === userId 
+        ? { 
+            id: inq.listing?.sellerId, 
+            name: inq.listing?.seller?.sellerProfile?.displayName || inq.listing?.seller?.username?.split('@')[0] || 'Seller', 
+            phoneNumber: inq.listing?.seller?.phoneNumber || inq.listing?.seller?.whatsappNumber || '',
+            role: 'SELLER' 
+          }
+        : { 
+            id: inq.buyerId, 
+            name: inq.buyer?.username?.split('@')[0] || 'Buyer', 
+            phoneNumber: inq.buyer?.phoneNumber || inq.buyer?.whatsappNumber || '',
+            role: 'BUYER' 
+          };
+
+      // Mock isOnline indicator
+      const otherUser = {
+        ...otherUserRaw,
+        isOnline: (otherUserRaw.id % 3 !== 0)
+      };
 
       return {
         ...inq,
         otherUser,
-        messages: msgs
+        latestMessage,
+        unreadCount,
+        messages: [latestMessage]
       };
+    }));
+
+    // Sort by latest message timestamp DESC
+    formatted.sort((a, b) => {
+      const timeA = new Date(a.latestMessage?.createdAt || a.createdAt).getTime();
+      const timeB = new Date(b.latestMessage?.createdAt || b.createdAt).getTime();
+      return timeB - timeA;
     });
 
     res.json(formatted);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Messages for a specific Inquiry/Conversation
+app.get('/api/inquiries/:id/messages', authenticateToken, async (req, res) => {
+  try {
+    const inquiryId = parseInt(req.params.id);
+    const userId = req.user.id;
+
+    const inquiry = await prisma.inquiry.findUnique({
+      where: { id: inquiryId },
+      include: { listing: true }
+    });
+
+    if (!inquiry) return res.status(404).json({ error: "Inquiry not found." });
+
+    if (inquiry.buyerId !== userId && inquiry.listing.sellerId !== userId && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "Forbidden: You are not a participant in this conversation." });
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { inquiryId },
+      include: {
+        sender: { select: { id: true, username: true, role: true } }
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    // Support legacy messages if messages relation is empty
+    let msgs = [...messages];
+    if (msgs.length === 0) {
+      msgs.push({
+        id: `legacy-buyer-${inquiry.id}`,
+        inquiryId: inquiry.id,
+        senderId: inquiry.buyerId,
+        sender: { id: inquiry.buyerId, username: 'Buyer', role: 'BUYER' },
+        text: inquiry.message,
+        createdAt: inquiry.createdAt
+      });
+      if (inquiry.replyMessage) {
+        msgs.push({
+          id: `legacy-seller-${inquiry.id}`,
+          inquiryId: inquiry.id,
+          senderId: inquiry.listing.sellerId,
+          sender: { id: inquiry.listing.sellerId, username: 'Seller', role: 'SELLER' },
+          text: inquiry.replyMessage,
+          createdAt: inquiry.createdAt
+        });
+      }
+    }
+
+    res.json(msgs);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
