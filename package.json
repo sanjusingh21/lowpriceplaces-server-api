@@ -4,7 +4,7 @@
   "description": "Backend CMS and API Server for GlassifyClassifieds",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "prisma migrate deploy && node server.js",
     "dev": "nodemon server.js",
     "db:init": "prisma migrate dev --name init && prisma db seed",
     "db:seed": "prisma db seed"
