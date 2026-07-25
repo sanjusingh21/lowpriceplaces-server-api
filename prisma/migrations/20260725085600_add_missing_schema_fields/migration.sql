@@ -1,26 +1,26 @@
--- AlterTable
-ALTER TABLE "Category" ADD COLUMN     "emoji" TEXT NOT NULL DEFAULT '📁',
-ADD COLUMN     "imagePath" TEXT;
+-- AlterTable Category
+ALTER TABLE "Category" ADD COLUMN IF NOT EXISTS "emoji" TEXT NOT NULL DEFAULT '📁';
+ALTER TABLE "Category" ADD COLUMN IF NOT EXISTS "imagePath" TEXT;
 
--- AlterTable
-ALTER TABLE "Listing" ADD COLUMN     "latitude" DOUBLE PRECISION,
-ADD COLUMN     "listingType" TEXT NOT NULL DEFAULT 'SALES',
-ADD COLUMN     "longitude" DOUBLE PRECISION,
-ADD COLUMN     "moderatedAt" TIMESTAMP(3),
-ADD COLUMN     "moderatedById" INTEGER,
-ADD COLUMN     "priceMax" DOUBLE PRECISION;
+-- AlterTable Listing
+ALTER TABLE "Listing" ADD COLUMN IF NOT EXISTS "latitude" DOUBLE PRECISION;
+ALTER TABLE "Listing" ADD COLUMN IF NOT EXISTS "listingType" TEXT NOT NULL DEFAULT 'SALES';
+ALTER TABLE "Listing" ADD COLUMN IF NOT EXISTS "longitude" DOUBLE PRECISION;
+ALTER TABLE "Listing" ADD COLUMN IF NOT EXISTS "moderatedAt" TIMESTAMP(3);
+ALTER TABLE "Listing" ADD COLUMN IF NOT EXISTS "moderatedById" INTEGER;
+ALTER TABLE "Listing" ADD COLUMN IF NOT EXISTS "priceMax" DOUBLE PRECISION;
 
--- AlterTable
-ALTER TABLE "Review" ADD COLUMN     "serviceId" INTEGER,
-ADD COLUMN     "storeId" INTEGER,
-ALTER COLUMN "listingId" DROP NOT NULL;
+-- AlterTable Review
+ALTER TABLE "Review" ADD COLUMN IF NOT EXISTS "serviceId" INTEGER;
+ALTER TABLE "Review" ADD COLUMN IF NOT EXISTS "storeId" INTEGER;
+ALTER TABLE "Review" ALTER COLUMN "listingId" DROP NOT NULL;
 
--- AlterTable
-ALTER TABLE "SubCategory" ADD COLUMN     "emoji" TEXT NOT NULL DEFAULT '🔹',
-ADD COLUMN     "imagePath" TEXT;
+-- AlterTable SubCategory
+ALTER TABLE "SubCategory" ADD COLUMN IF NOT EXISTS "emoji" TEXT NOT NULL DEFAULT '🔹';
+ALTER TABLE "SubCategory" ADD COLUMN IF NOT EXISTS "imagePath" TEXT;
 
--- CreateTable
-CREATE TABLE "Message" (
+-- CreateTable Message
+CREATE TABLE IF NOT EXISTS "Message" (
     "id" SERIAL NOT NULL,
     "inquiryId" INTEGER NOT NULL,
     "senderId" INTEGER NOT NULL,
@@ -30,8 +30,8 @@ CREATE TABLE "Message" (
     CONSTRAINT "Message_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "City" (
+-- CreateTable City
+CREATE TABLE IF NOT EXISTS "City" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "emoji" TEXT NOT NULL DEFAULT '📍',
@@ -40,8 +40,8 @@ CREATE TABLE "City" (
     CONSTRAINT "City_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Store" (
+-- CreateTable Store
+CREATE TABLE IF NOT EXISTS "Store" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "category" TEXT NOT NULL,
@@ -56,8 +56,8 @@ CREATE TABLE "Store" (
     CONSTRAINT "Store_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Service" (
+-- CreateTable Service
+CREATE TABLE IF NOT EXISTS "Service" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "serviceType" TEXT NOT NULL,
@@ -73,8 +73,8 @@ CREATE TABLE "Service" (
     CONSTRAINT "Service_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "SellerProfile" (
+-- CreateTable SellerProfile
+CREATE TABLE IF NOT EXISTS "SellerProfile" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER NOT NULL,
     "fullName" TEXT NOT NULL,
@@ -94,25 +94,36 @@ CREATE TABLE "SellerProfile" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "City_name_key" ON "City"("name");
+CREATE UNIQUE INDEX IF NOT EXISTS "City_name_key" ON "City"("name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "SellerProfile_userId_key" ON "SellerProfile"("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS "SellerProfile_userId_key" ON "SellerProfile"("userId");
 
 -- AddForeignKey
-ALTER TABLE "Listing" ADD CONSTRAINT "Listing_moderatedById_fkey" FOREIGN KEY ("moderatedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Listing_moderatedById_fkey') THEN
+    ALTER TABLE "Listing" ADD CONSTRAINT "Listing_moderatedById_fkey" FOREIGN KEY ("moderatedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Review" ADD CONSTRAINT "Review_storeId_fkey" FOREIGN KEY ("storeId") REFERENCES "Store"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Review_storeId_fkey') THEN
+    ALTER TABLE "Review" ADD CONSTRAINT "Review_storeId_fkey" FOREIGN KEY ("storeId") REFERENCES "Store"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Review" ADD CONSTRAINT "Review_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Review_serviceId_fkey') THEN
+    ALTER TABLE "Review" ADD CONSTRAINT "Review_serviceId_fkey" FOREIGN KEY ("serviceId") REFERENCES "Service"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Message" ADD CONSTRAINT "Message_inquiryId_fkey" FOREIGN KEY ("inquiryId") REFERENCES "Inquiry"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Message_inquiryId_fkey') THEN
+    ALTER TABLE "Message" ADD CONSTRAINT "Message_inquiryId_fkey" FOREIGN KEY ("inquiryId") REFERENCES "Inquiry"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Message" ADD CONSTRAINT "Message_senderId_fkey" FOREIGN KEY ("senderId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'Message_senderId_fkey') THEN
+    ALTER TABLE "Message" ADD CONSTRAINT "Message_senderId_fkey" FOREIGN KEY ("senderId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "SellerProfile" ADD CONSTRAINT "SellerProfile_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'SellerProfile_userId_fkey') THEN
+    ALTER TABLE "SellerProfile" ADD CONSTRAINT "SellerProfile_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END
+$$;
