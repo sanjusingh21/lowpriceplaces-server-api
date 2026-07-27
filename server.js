@@ -209,10 +209,16 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: "Username and password are required." });
     }
 
-    const user = await prisma.user.findUnique({ where: { username } });
+    let user = await prisma.user.findUnique({ where: { username } });
     if (!user || !bcrypt.compareSync(password, user.password)) {
       return res.status(400).json({ error: "Invalid username or password." });
     }
+
+    // Update last login
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() }
+    });
 
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     res.json({
@@ -222,7 +228,10 @@ app.post('/api/auth/login', async (req, res) => {
         username: user.username,
         role: user.role,
         phoneNumber: user.phoneNumber,
-        whatsappNumber: user.whatsappNumber
+        whatsappNumber: user.whatsappNumber,
+        fullName: user.fullName,
+        profilePicture: user.profilePicture,
+        provider: user.provider
       }
     });
   } catch (error) {
@@ -255,13 +264,18 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       professionalTitle: "",
       yearsOfExperience: 0,
       businessCategory: "",
+      businessType: "",
       aboutSeller: "",
       email: "",
       mobileNumber: "",
       whatsAppNumber: "",
       showWhatsapp: true,
       showPhone: true,
-      allowChat: true
+      allowChat: true,
+      location: "",
+      latitude: null,
+      longitude: null,
+      imagePath: null
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -269,7 +283,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
 });
 
 // Create/Update Seller Profile of current user
-app.put('/api/profile', authenticateToken, async (req, res) => {
+app.put('/api/profile', authenticateToken, imageUpload.single('image'), optimizeImagesMiddleware, async (req, res) => {
   try {
     const {
       fullName,
@@ -277,14 +291,27 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
       professionalTitle,
       yearsOfExperience,
       businessCategory,
+      businessType,
       aboutSeller,
       email,
       mobileNumber,
       whatsAppNumber,
       showWhatsapp,
       showPhone,
-      allowChat
+      allowChat,
+      location,
+      latitude,
+      longitude
     } = req.body;
+
+    const existingProfile = await prisma.sellerProfile.findUnique({
+      where: { userId: req.user.id }
+    });
+
+    const parsedLat = latitude ? parseFloat(latitude) : null;
+    const parsedLng = longitude ? parseFloat(longitude) : null;
+
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : (existingProfile ? existingProfile.imagePath : null);
 
     const profile = await prisma.sellerProfile.upsert({
       where: { userId: req.user.id },
@@ -294,13 +321,18 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
         professionalTitle: professionalTitle || "",
         yearsOfExperience: parseInt(yearsOfExperience) || 0,
         businessCategory: businessCategory || "",
+        businessType: businessType || null,
         aboutSeller: aboutSeller || "",
         email: email || "",
         mobileNumber: mobileNumber || null,
         whatsAppNumber: whatsAppNumber || null,
-        showWhatsapp: showWhatsapp !== false,
-        showPhone: showPhone !== false,
-        allowChat: allowChat !== false
+        showWhatsapp: showWhatsapp !== 'false' && showWhatsapp !== false,
+        showPhone: showPhone !== 'false' && showPhone !== false,
+        allowChat: allowChat !== 'false' && allowChat !== false,
+        location: location || null,
+        latitude: isNaN(parsedLat) ? null : parsedLat,
+        longitude: isNaN(parsedLng) ? null : parsedLng,
+        imagePath
       },
       create: {
         userId: req.user.id,
@@ -309,13 +341,18 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
         professionalTitle: professionalTitle || "",
         yearsOfExperience: parseInt(yearsOfExperience) || 0,
         businessCategory: businessCategory || "",
+        businessType: businessType || null,
         aboutSeller: aboutSeller || "",
         email: email || "",
         mobileNumber: mobileNumber || null,
         whatsAppNumber: whatsAppNumber || null,
-        showWhatsapp: showWhatsapp !== false,
-        showPhone: showPhone !== false,
-        allowChat: allowChat !== false
+        showWhatsapp: showWhatsapp !== 'false' && showWhatsapp !== false,
+        showPhone: showPhone !== 'false' && showPhone !== false,
+        allowChat: allowChat !== 'false' && allowChat !== false,
+        location: location || null,
+        latitude: isNaN(parsedLat) ? null : parsedLat,
+        longitude: isNaN(parsedLng) ? null : parsedLng,
+        imagePath
       }
     });
 
@@ -328,7 +365,7 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
 // Google Auth Sign-In / Sign-Up
 app.post('/api/auth/google', async (req, res) => {
   try {
-    const { credential, role } = req.body;
+    const { credential } = req.body;
     if (!credential) {
       return res.status(400).json({ error: "Credential token is required." });
     }
@@ -344,23 +381,39 @@ app.post('/api/auth/google', async (req, res) => {
       return res.status(400).json({ error: "Email not retrieved from Google." });
     }
 
-    // Check if user exists
+    const googleId = payload.sub;
+    const fullName = payload.name || "";
+    const profilePicture = payload.picture || null;
+
+    // Check if user exists by email (username)
     let user = await prisma.user.findUnique({ where: { username: email } });
     if (!user) {
-      // Prevent automatic registration without a valid role selection
-      const userRole = role ? role.toUpperCase() : '';
-      if (userRole !== 'BUYER' && userRole !== 'SELLER') {
-        return res.status(400).json({ error: "Account not found. Please register first to choose your account type." });
-      }
-
-      // Create new user with Google signup
-      // Generate random password for google account
+      // Create new user automatically with default BUYER role
       const randomPassword = bcrypt.hashSync(Math.random().toString(36), 10);
       user = await prisma.user.create({
         data: {
           username: email,
           password: randomPassword,
-          role: userRole
+          role: "BUYER",
+          fullName,
+          googleId,
+          profilePicture,
+          provider: "GOOGLE",
+          emailVerified: true,
+          lastLogin: new Date()
+        }
+      });
+    } else {
+      // User exists, update Google profile fields and lastLogin
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          lastLogin: new Date(),
+          fullName: user.fullName || fullName,
+          googleId: user.googleId || googleId,
+          profilePicture: user.profilePicture || profilePicture,
+          provider: user.provider === "MANUAL" ? "GOOGLE" : user.provider,
+          emailVerified: true
         }
       });
     }
@@ -374,7 +427,10 @@ app.post('/api/auth/google', async (req, res) => {
         username: user.username,
         role: user.role,
         phoneNumber: user.phoneNumber,
-        whatsappNumber: user.whatsappNumber
+        whatsappNumber: user.whatsappNumber,
+        fullName: user.fullName,
+        profilePicture: user.profilePicture,
+        provider: user.provider
       }
     });
   } catch (error) {
@@ -639,7 +695,7 @@ app.get('/api/stores', async (req, res) => {
     const userLat = parseFloat(lat);
     const userLng = parseFloat(lng);
 
-    const mapped = stores.map(store => {
+    const mappedStores = stores.map(store => {
       let distance = null;
       if (!isNaN(userLat) && !isNaN(userLng) && store.latitude && store.longitude) {
         distance = calculateDistance(userLat, userLng, store.latitude, store.longitude);
@@ -653,12 +709,115 @@ app.get('/api/stores', async (req, res) => {
         ...store, 
         distance,
         averageRating: Number(avg.toFixed(1)),
-        totalReviews: store.reviews.length
+        totalReviews: store.reviews.length,
+        isSellerProfile: false
       };
     });
 
-    if (!isNaN(userLat) && !isNaN(userLng)) {
-      mapped.sort((a, b) => {
+    // Query seller profiles
+    const hasCoordinates = !isNaN(userLat) && !isNaN(userLng);
+    let profiles = [];
+    let usedRecentFallback = false;
+
+    if (hasCoordinates) {
+      const profileFilter = {
+        latitude: { not: null },
+        longitude: { not: null }
+      };
+      if (category) {
+        profileFilter.businessCategory = category;
+      }
+
+      const tempProfiles = await prisma.sellerProfile.findMany({
+        where: profileFilter,
+        include: {
+          reviews: true
+        }
+      });
+
+      // Map profiles and calculate distance
+      const profilesWithDistance = tempProfiles.map(profile => {
+        const distance = calculateDistance(userLat, userLng, profile.latitude, profile.longitude);
+        const avg = profile.reviews.length > 0
+          ? profile.reviews.reduce((acc, curr) => acc + curr.rating, 0) / profile.reviews.length
+          : 5.0;
+        return {
+          id: -profile.userId,
+          name: profile.displayName || profile.fullName,
+          category: profile.businessCategory,
+          imagePath: profile.imagePath || null,
+          location: profile.location || "",
+          latitude: profile.latitude,
+          longitude: profile.longitude,
+          rating: avg,
+          contact: profile.whatsAppNumber || profile.mobileNumber || "",
+          createdAt: new Date(), // fallback
+          distance,
+          averageRating: Number(avg.toFixed(1)),
+          totalReviews: profile.reviews.length,
+          isSellerProfile: true
+        };
+      });
+
+      // Filter to nearby profiles (e.g., within 50 km)
+      const nearbyProfiles = profilesWithDistance.filter(p => p.distance <= 50);
+
+      if (nearbyProfiles.length > 0) {
+        profiles = nearbyProfiles;
+      } else {
+        usedRecentFallback = true;
+      }
+    } else {
+      usedRecentFallback = true;
+    }
+
+    if (usedRecentFallback) {
+      const fallbackFilter = {};
+      if (category) {
+        fallbackFilter.businessCategory = category;
+      }
+
+      const recentProfiles = await prisma.sellerProfile.findMany({
+        where: fallbackFilter,
+        orderBy: {
+          id: 'desc'
+        },
+        take: 10,
+        include: {
+          reviews: true
+        }
+      });
+
+      profiles = recentProfiles.map(profile => {
+        const avg = profile.reviews.length > 0
+          ? profile.reviews.reduce((acc, curr) => acc + curr.rating, 0) / profile.reviews.length
+          : 5.0;
+        return {
+          id: -profile.userId,
+          name: profile.displayName || profile.fullName,
+          category: profile.businessCategory,
+          imagePath: profile.imagePath || null,
+          location: profile.location || "",
+          latitude: profile.latitude,
+          longitude: profile.longitude,
+          rating: avg,
+          contact: profile.whatsAppNumber || profile.mobileNumber || "",
+          createdAt: new Date(),
+          distance: null, // no distance
+          averageRating: Number(avg.toFixed(1)),
+          totalReviews: profile.reviews.length,
+          isSellerProfile: true,
+          isRecentFallback: true
+        };
+      });
+    }
+
+    // Combine stores and seller profiles
+    const combined = [...mappedStores, ...profiles];
+
+    if (hasCoordinates) {
+      combined.sort((a, b) => {
+        if (a.distance === null && b.distance === null) return 0;
         if (a.distance === null) return 1;
         if (b.distance === null) return -1;
         return a.distance - b.distance;
@@ -670,9 +829,9 @@ app.get('/api/stores', async (req, res) => {
     if (!isNaN(pageNum) && !isNaN(limitNum)) {
       const startIndex = (pageNum - 1) * limitNum;
       const endIndex = pageNum * limitNum;
-      res.json(mapped.slice(startIndex, endIndex));
+      res.json(combined.slice(startIndex, endIndex));
     } else {
-      res.json(mapped);
+      res.json(combined);
     }
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -684,41 +843,77 @@ app.get('/api/services', async (req, res) => {
   try {
     const { lat, lng, serviceType, page, limit } = req.query;
 
-    const filter = {};
+    const filter = {
+      listingType: "SERVICES",
+      status: "ACTIVE"
+    };
+
     if (serviceType) {
-      filter.serviceType = serviceType;
+      filter.OR = [
+        { category: { name: { contains: serviceType, mode: 'insensitive' } } },
+        { subCategory: { name: { contains: serviceType, mode: 'insensitive' } } }
+      ];
     }
 
-    const services = await prisma.service.findMany({
+    const listings = await prisma.listing.findMany({
       where: filter,
       include: {
+        category: true,
+        subCategory: true,
+        seller: {
+          select: { username: true, emailVerified: true }
+        },
         reviews: true
+      },
+      orderBy: {
+        createdAt: 'desc'
       }
     });
 
     const userLat = parseFloat(lat);
     const userLng = parseFloat(lng);
 
-    const mapped = services.map(service => {
+    const mapped = listings.map(l => {
       let distance = null;
-      if (!isNaN(userLat) && !isNaN(userLng) && service.latitude && service.longitude) {
-        distance = calculateDistance(userLat, userLng, service.latitude, service.longitude);
+      if (!isNaN(userLat) && !isNaN(userLng) && l.latitude && l.longitude) {
+        distance = calculateDistance(userLat, userLng, l.latitude, l.longitude);
       }
 
-      const avg = service.reviews.length > 0
-        ? service.reviews.reduce((acc, curr) => acc + curr.rating, 0) / service.reviews.length
-        : service.rating;
+      const avg = l.reviews.length > 0
+        ? l.reviews.reduce((acc, curr) => acc + curr.rating, 0) / l.reviews.length
+        : 0;
 
-      return { 
-        ...service, 
+      let firstImage = null;
+      if (l.imagePath) {
+        const parts = l.imagePath.split(',');
+        if (parts.length > 0) {
+          firstImage = parts[0].trim();
+        }
+      }
+
+      return {
+        id: l.id,
+        name: l.title,
+        serviceType: l.subCategory?.name || l.category?.name || "Service",
+        categoryName: l.category?.name || "",
+        imagePath: firstImage,
+        location: l.location,
+        latitude: l.latitude,
+        longitude: l.longitude,
+        price: l.price,
+        rating: avg || 5.0,
+        averageRating: avg || 5.0,
+        totalReviews: l.reviews.length,
+        contact: l.whatsappNumber || l.contactNumber || null,
         distance,
-        averageRating: Number(avg.toFixed(1)),
-        totalReviews: service.reviews.length
+        verified: l.seller?.emailVerified || false,
+        createdAt: l.createdAt
       };
     });
 
     if (!isNaN(userLat) && !isNaN(userLng)) {
       mapped.sort((a, b) => {
+        if (a.distance === null && b.distance === null) return 0;
         if (a.distance === null) return 1;
         if (b.distance === null) return -1;
         return a.distance - b.distance;
@@ -744,6 +939,76 @@ app.get('/api/stores/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { lat, lng } = req.query;
+
+    if (id < 0) {
+      const userId = Math.abs(id);
+      const profile = await prisma.sellerProfile.findUnique({
+        where: { userId },
+        include: {
+          reviews: {
+            include: {
+              buyer: {
+                select: { username: true }
+              }
+            },
+            orderBy: {
+              createdAt: 'desc'
+            }
+          }
+        }
+      });
+      if (!profile) return res.status(404).json({ error: "Seller profile not found" });
+
+      const userLat = parseFloat(lat);
+      const userLng = parseFloat(lng);
+      let distance = null;
+      if (!isNaN(userLat) && !isNaN(userLng) && profile.latitude && profile.longitude) {
+        distance = calculateDistance(userLat, userLng, profile.latitude, profile.longitude);
+      }
+
+      // Related listings: ACTIVE listings owned by this seller
+      const relatedListings = await prisma.listing.findMany({
+        where: {
+          sellerId: userId,
+          status: "ACTIVE"
+        },
+        include: {
+          category: true,
+          subCategory: true,
+          reviews: {
+            select: { rating: true }
+          }
+        },
+        take: 6
+      });
+
+      const avg = profile.reviews.length > 0
+        ? profile.reviews.reduce((acc, curr) => acc + curr.rating, 0) / profile.reviews.length
+        : 5.0;
+
+      const enrichedStore = {
+        id: -profile.userId,
+        name: profile.displayName || profile.fullName,
+        category: profile.businessCategory,
+        imagePath: profile.imagePath || null,
+        location: profile.location || "",
+        latitude: profile.latitude,
+        longitude: profile.longitude,
+        rating: avg,
+        contact: profile.whatsAppNumber || profile.mobileNumber || "",
+        about: profile.aboutSeller,
+        professionalTitle: profile.professionalTitle,
+        yearsOfExperience: profile.yearsOfExperience,
+        email: profile.email,
+        distance,
+        averageRating: Number(avg.toFixed(1)),
+        totalReviews: profile.reviews.length,
+        reviews: profile.reviews,
+        isSellerProfile: true
+      };
+
+      return res.json({ store: enrichedStore, relatedListings });
+    }
 
     const store = await prisma.store.findUnique({
       where: { id },
@@ -794,7 +1059,8 @@ app.get('/api/stores/:id', async (req, res) => {
       ...store,
       distance,
       averageRating: Number(avg.toFixed(1)),
-      totalReviews: store.reviews.length
+      totalReviews: store.reviews.length,
+      isSellerProfile: false
     };
 
     res.json({ store: enrichedStore, relatedListings });
@@ -809,9 +1075,14 @@ app.get('/api/services/:id', async (req, res) => {
     const id = parseInt(req.params.id);
     const { lat, lng } = req.query;
 
-    const service = await prisma.service.findUnique({
-      where: { id },
+    const listing = await prisma.listing.findFirst({
+      where: { id, listingType: "SERVICES" },
       include: {
+        category: true,
+        subCategory: true,
+        seller: {
+          select: { username: true, emailVerified: true }
+        },
         reviews: {
           include: {
             buyer: {
@@ -824,18 +1095,18 @@ app.get('/api/services/:id', async (req, res) => {
         }
       }
     });
-    if (!service) return res.status(404).json({ error: "Service not found" });
+    if (!listing) return res.status(404).json({ error: "Service not found" });
 
     const userLat = parseFloat(lat);
     const userLng = parseFloat(lng);
     let distance = null;
-    if (!isNaN(userLat) && !isNaN(userLng) && service.latitude && service.longitude) {
-      distance = calculateDistance(userLat, userLng, service.latitude, service.longitude);
+    if (!isNaN(userLat) && !isNaN(userLng) && listing.latitude && listing.longitude) {
+      distance = calculateDistance(userLat, userLng, listing.latitude, listing.longitude);
     }
 
     const relatedListings = await prisma.listing.findMany({
       where: {
-        location: { contains: service.location, mode: 'insensitive' },
+        location: { contains: listing.location, mode: 'insensitive' },
         status: "ACTIVE"
       },
       include: {
@@ -848,15 +1119,38 @@ app.get('/api/services/:id', async (req, res) => {
       take: 6
     });
 
-    const avg = service.reviews.length > 0
-      ? service.reviews.reduce((acc, curr) => acc + curr.rating, 0) / service.reviews.length
-      : service.rating;
+    const avg = listing.reviews.length > 0
+      ? listing.reviews.reduce((acc, curr) => acc + curr.rating, 0) / listing.reviews.length
+      : 5.0;
+
+    let firstImage = null;
+    if (listing.imagePath) {
+      const parts = listing.imagePath.split(',');
+      if (parts.length > 0) {
+        firstImage = parts[0].trim();
+      }
+    }
 
     const enrichedService = {
-      ...service,
-      distance,
-      averageRating: Number(avg.toFixed(1)),
-      totalReviews: service.reviews.length
+      id: listing.id,
+      name: listing.title,
+      serviceType: listing.subCategory?.name || listing.category?.name || "Service",
+      imagePath: firstImage,
+      location: listing.location,
+      latitude: listing.latitude,
+      longitude: listing.longitude,
+      rating: avg,
+      averageRating: avg,
+      totalReviews: listing.reviews.length,
+      reviews: listing.reviews.map(r => ({
+        id: r.id,
+        rating: r.rating,
+        comment: r.comment,
+        createdAt: r.createdAt,
+        buyer: r.buyer
+      })),
+      contact: listing.whatsappNumber || listing.contactNumber || null,
+      distance
     };
 
     res.json({ service: enrichedService, relatedListings });
@@ -1018,7 +1312,7 @@ app.delete('/api/services/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR
 // Add a review to a store
 app.post('/api/stores/:id/reviews', authenticateToken, async (req, res) => {
   try {
-    const storeId = parseInt(req.params.id);
+    const id = parseInt(req.params.id);
     const { rating, comment } = req.body;
     const buyerId = req.user.id;
 
@@ -1026,9 +1320,32 @@ app.post('/api/stores/:id/reviews', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Rating must be between 1 and 5" });
     }
 
+    if (id < 0) {
+      const userId = Math.abs(id);
+      const profile = await prisma.sellerProfile.findUnique({
+        where: { userId }
+      });
+      if (!profile) return res.status(404).json({ error: "Seller profile not found" });
+
+      const newReview = await prisma.review.create({
+        data: {
+          sellerProfileId: profile.id,
+          buyerId,
+          rating: parseInt(rating),
+          comment: comment || ""
+        },
+        include: {
+          buyer: {
+            select: { username: true }
+          }
+        }
+      });
+      return res.status(201).json(newReview);
+    }
+
     const newReview = await prisma.review.create({
       data: {
-        storeId,
+        storeId: id,
         buyerId,
         rating: parseInt(rating),
         comment: comment || ""
@@ -1042,11 +1359,11 @@ app.post('/api/stores/:id/reviews', authenticateToken, async (req, res) => {
 
     // Update overall average rating in Store model
     const allReviews = await prisma.review.findMany({
-      where: { storeId }
+      where: { storeId: id }
     });
     const avgRating = allReviews.reduce((acc, curr) => acc + curr.rating, 0) / allReviews.length;
     await prisma.store.update({
-      where: { id: storeId },
+      where: { id },
       data: { rating: parseFloat(avgRating.toFixed(1)) }
     });
 
@@ -1069,7 +1386,7 @@ app.post('/api/services/:id/reviews', authenticateToken, async (req, res) => {
 
     const newReview = await prisma.review.create({
       data: {
-        serviceId,
+        listingId: serviceId,
         buyerId,
         rating: parseInt(rating),
         comment: comment || ""
@@ -1079,15 +1396,6 @@ app.post('/api/services/:id/reviews', authenticateToken, async (req, res) => {
           select: { username: true }
         }
       }
-    });
-
-    const allReviews = await prisma.review.findMany({
-      where: { serviceId }
-    });
-    const avgRating = allReviews.reduce((acc, curr) => acc + curr.rating, 0) / allReviews.length;
-    await prisma.service.update({
-      where: { id: serviceId },
-      data: { rating: parseFloat(avgRating.toFixed(1)) }
     });
 
     res.status(201).json(newReview);
@@ -1300,6 +1608,8 @@ app.post('/api/listings', authenticateToken, requireRole(['SELLER', 'ADMIN', 'ED
       }
     });
 
+    io.emit('listings_update', { action: 'create', listing });
+
     res.status(201).json(listing);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1388,6 +1698,8 @@ app.put('/api/listings/:id/status', authenticateToken, requireRole(['ADMIN', 'ED
       data: dataUpdate
     });
 
+    io.emit('listings_update', { action: 'update', listing: updatedListing });
+
     res.json(updatedListing);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1437,6 +1749,8 @@ app.put('/api/listings/:id', authenticateToken, requireRole(['ADMIN', 'EDITOR', 
       data: updatedData
     });
 
+    io.emit('listings_update', { action: 'update', listing: updatedListing });
+
     res.json(updatedListing);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1456,6 +1770,7 @@ app.delete('/api/listings/:id', authenticateToken, async (req, res) => {
     }
 
     await prisma.listing.delete({ where: { id: listingId } });
+    io.emit('listings_update', { action: 'delete', id: listingId });
     res.json({ message: "Listing deleted successfully." });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2231,6 +2546,43 @@ app.delete('/api/users/:id', authenticateToken, requireRole(['ADMIN']), async (r
     }
     await prisma.user.delete({ where: { id: userId } });
     res.json({ message: "User deleted successfully." });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- ADMIN SELLER PROFILE ROUTING ---
+
+// Get all seller profiles (Admin/Editor Only)
+app.get('/api/admin/seller-profiles', authenticateToken, requireRole(['ADMIN', 'EDITOR']), async (req, res) => {
+  try {
+    const profiles = await prisma.sellerProfile.findMany({
+      include: {
+        user: {
+          select: {
+            username: true,
+            role: true
+          }
+        }
+      },
+      orderBy: {
+        id: 'desc'
+      }
+    });
+    res.json(profiles);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete seller profile (Admin Only)
+app.delete('/api/admin/seller-profiles/:id', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await prisma.sellerProfile.delete({
+      where: { id }
+    });
+    res.json({ message: "Seller profile deleted successfully." });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

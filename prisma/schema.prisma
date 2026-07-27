@@ -14,6 +14,13 @@ model User {
   role            String    // ADMIN, EDITOR, SEO, SELLER, BUYER
   phoneNumber     String?
   whatsappNumber  String?
+  fullName        String?
+  googleId        String?   @unique
+  profilePicture  String?
+  provider        String    @default("MANUAL")
+  emailVerified   Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  lastLogin       DateTime?
   listings        Listing[]
   inquiries       Inquiry[] @relation("BuyerInquiries")
   reviews         Review[]
@@ -74,20 +81,22 @@ model Listing {
 }
 
 model Review {
-  id        Int      @id @default(autoincrement())
-  listingId Int?
-  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  storeId   Int?
-  store     Store?   @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  serviceId Int?
-  service   Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  buyerId   Int
-  buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
-  rating    Int
-  comment   String
-  images    String[] // Array of image URLs/paths, native Postgres array
-  videos    String[] // Array of video URLs/paths, native Postgres array
-  createdAt DateTime @default(now())
+  id              Int            @id @default(autoincrement())
+  listingId       Int?
+  listing         Listing?       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  storeId         Int?
+  store           Store?         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  serviceId       Int?
+  service         Service?       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  sellerProfileId Int?
+  sellerProfile   SellerProfile? @relation(fields: [sellerProfileId], references: [id], onDelete: Cascade)
+  buyerId         Int
+  buyer           User           @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  rating          Int
+  comment         String
+  images          String[] // Array of image URLs/paths, native Postgres array
+  videos          String[] // Array of video URLs/paths, native Postgres array
+  createdAt       DateTime       @default(now())
 }
 
 model Inquiry {
@@ -166,6 +175,7 @@ model SellerProfile {
   professionalTitle String
   yearsOfExperience Int
   businessCategory  String
+  businessType      String?
   aboutSeller       String
   email             String
   mobileNumber      String?
@@ -173,4 +183,9 @@ model SellerProfile {
   showWhatsapp      Boolean  @default(true)
   showPhone         Boolean  @default(true)
   allowChat         Boolean  @default(true)
+  location          String?
+  latitude          Float?
+  longitude         Float?
+  imagePath         String?
+  reviews           Review[]
 }
