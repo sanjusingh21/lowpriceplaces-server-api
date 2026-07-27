@@ -11,15 +11,22 @@ model User {
   id              Int       @id @default(autoincrement())
   username        String    @unique
   password        String
-  role            String    // ADMIN, EDITOR, SEO, SELLER, BUYER
+  role            String    // ADMIN, EDITOR, SEO, SELLER, BUYER, USER
   phoneNumber     String?
   whatsappNumber  String?
+  fullName        String?
+  googleId        String?   @unique
+  profilePicture  String?
+  provider        String    @default("MANUAL")
+  emailVerified   Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  lastLogin       DateTime?
   listings        Listing[]
   inquiries       Inquiry[] @relation("BuyerInquiries")
   reviews         Review[]
   messages        Message[]
   moderatedListings Listing[] @relation("ListingModerator")
-  sellerProfile   SellerProfile?
+  profile         Profile?
 }
 
 model Category {
@@ -74,20 +81,22 @@ model Listing {
 }
 
 model Review {
-  id        Int      @id @default(autoincrement())
-  listingId Int?
-  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  storeId   Int?
-  store     Store?   @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  serviceId Int?
-  service   Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  buyerId   Int
-  buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
-  rating    Int
-  comment   String
-  images    String[] // Array of image URLs/paths, native Postgres array
-  videos    String[] // Array of video URLs/paths, native Postgres array
-  createdAt DateTime @default(now())
+  id              Int            @id @default(autoincrement())
+  listingId       Int?
+  listing         Listing?       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  storeId         Int?
+  store           Store?         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  serviceId       Int?
+  service         Service?       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  profileId       Int?
+  profile         Profile? @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  buyerId         Int
+  buyer           User           @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  rating          Int
+  comment         String
+  images          String[] // Array of image URLs/paths, native Postgres array
+  videos          String[] // Array of video URLs/paths, native Postgres array
+  createdAt       DateTime       @default(now())
 }
 
 model Inquiry {
@@ -157,7 +166,7 @@ model Service {
   reviews     Review[]
 }
 
-model SellerProfile {
+model Profile {
   id                Int      @id @default(autoincrement())
   userId            Int      @unique
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -166,6 +175,7 @@ model SellerProfile {
   professionalTitle String
   yearsOfExperience Int
   businessCategory  String
+  businessType      String?
   aboutSeller       String
   email             String
   mobileNumber      String?
@@ -173,4 +183,30 @@ model SellerProfile {
   showWhatsapp      Boolean  @default(true)
   showPhone         Boolean  @default(true)
   allowChat         Boolean  @default(true)
+  location          String?
+  latitude          Float?
+  longitude         Float?
+  imagePath         String?
+  reviews           Review[]
+}
+
+enum UploadStatus {
+  UNCOMMITTED
+  COMMITTED
+}
+
+model Media {
+  id         String       @id @default(uuid())
+  key        String       @unique
+  url        String
+  mimeType   String
+  size       Int
+  extension  String
+  status     UploadStatus @default(UNCOMMITTED)
+  uploadedBy Int?      // Reference to User id
+  entityType String?   // PROFILE, LISTING, etc.
+  entityId   Int?      // Generic ID linking to target entity
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime? // Supported for soft-deletes
 }
