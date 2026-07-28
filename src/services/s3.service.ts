@@ -1,4 +1,4 @@
-import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand, PutObjectTaggingCommand } from "@aws-sdk/client-s3";
+import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { s3Client, bucketName } from "../config/aws";
 
@@ -6,14 +6,12 @@ export class S3Service {
   /**
    * Generates a pre-signed URL for uploading a file (PUT method)
    * Expiry: 5 minutes (300 seconds)
-   * Automatically sets a Temporary tag on S3 upload
    */
   static async getPresignedPutUrl(key: string, contentType: string): Promise<string> {
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: key,
-      ContentType: contentType,
-      Tagging: "Status=Temporary"
+      ContentType: contentType
     });
     return getSignedUrl(s3Client, command, { expiresIn: 300 });
   }
@@ -31,22 +29,11 @@ export class S3Service {
   }
 
   /**
-   * Updates S3 object tags to mark upload as committed
+   * Updates S3 object tags (No-op on Cloudflare R2)
    */
   static async promoteObject(key: string): Promise<void> {
-    const command = new PutObjectTaggingCommand({
-      Bucket: bucketName,
-      Key: key,
-      Tagging: {
-        TagSet: [
-          {
-            Key: "Status",
-            Value: "Committed"
-          }
-        ]
-      }
-    });
-    await s3Client.send(command);
+    // Cloudflare R2 does not support object tagging.
+    return Promise.resolve();
   }
 
   /**

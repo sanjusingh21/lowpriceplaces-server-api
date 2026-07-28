@@ -86,8 +86,8 @@ async function main() {
 
   console.log("Users seeded successfully.");
 
-  // Seed SellerProfile for seller
-  await prisma.sellerProfile.upsert({
+  // Seed Profile for seller
+  await prisma.profile.upsert({
     where: { userId: seller.id },
     update: {},
     create: {

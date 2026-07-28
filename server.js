@@ -96,6 +96,23 @@ async function promoteListingImages(imagePath) {
 setInterval(async () => {
   try {
     const threshold = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
+    
+    // Find uncommitted files to delete from Cloudflare R2
+    const orphanedMedia = await prisma.media.findMany({
+      where: {
+        status: "UNCOMMITTED",
+        createdAt: { lt: threshold }
+      }
+    });
+
+    for (const item of orphanedMedia) {
+      try {
+        await S3Service.deleteObject(item.key);
+      } catch (r2Error) {
+        console.error(`[Lifecycle Cleanup] Failed to delete orphaned R2 object: ${item.key}`, r2Error);
+      }
+    }
+
     const deletedCount = await prisma.media.deleteMany({
       where: {
         status: "UNCOMMITTED",
@@ -103,7 +120,7 @@ setInterval(async () => {
       }
     });
     if (deletedCount.count > 0) {
-      console.log(`[Lifecycle Cleanup] Cleaned up ${deletedCount.count} expired uncommitted media records from database.`);
+      console.log(`[Lifecycle Cleanup] Cleaned up ${deletedCount.count} expired uncommitted media records from database and R2 storage.`);
     }
   } catch (err) {
     console.error("[Lifecycle Cleanup] Error running database media cleanup:", err);
@@ -119,8 +136,7 @@ async function uploadLocalToS3(filePath, key, mimeType) {
     Bucket: bucketName,
     Key: key,
     Body: fileBuffer,
-    ContentType: mimeType,
-    Tagging: "Status=Committed"
+    ContentType: mimeType
   });
   await s3Client.send(command);
   fs.unlinkSync(filePath);
