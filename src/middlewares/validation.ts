@@ -17,7 +17,7 @@ const ALLOWED_EXTENSIONS = [
   ".svg"
 ];
 
-const ALLOWED_FOLDERS_REGEX = /^(users\/\d+\/(profile|gallery)|posts\/\d+|products\/\d+|admin|temp)$/;
+const ALLOWED_FOLDERS_REGEX = /^(users\/\d+\/(profile|gallery)|posts\/\d+|products\/\d+|admin|temp|categories|subcategories|cities|stores|services)$/;
 
 export const validatePresignedUpload = (req: Request, res: Response, next: NextFunction) => {
   let { folder, fileName, contentType } = req.body;
@@ -44,13 +44,17 @@ export const validatePresignedUpload = (req: Request, res: Response, next: NextF
       return res.status(403).json({ error: "Forbidden: Only admins can upload to the admin folder." });
     }
     folder = "admin";
+  } else if (["categories", "subcategories", "cities", "stores", "services"].includes(folder)) {
+    if (userRole !== "ADMIN" && userRole !== "EDITOR") {
+      return res.status(403).json({ error: "Forbidden: Only admins or editors can upload to admin assets folders." });
+    }
   } else if (folder === "temp") {
     folder = "temp";
   }
 
   // Verify structure is compliant with folder layouts
   if (!ALLOWED_FOLDERS_REGEX.test(folder)) {
-    return res.status(400).json({ error: "Invalid folder structure. Must match allowed patterns (e.g., users/{id}/profile, posts/{id}, products/{id}, admin, temp)." });
+    return res.status(400).json({ error: "Invalid folder structure. Must match allowed patterns (e.g., users/{id}/profile, posts/{id}, products/{id}, admin, temp, categories, subcategories, cities, stores, services)." });
   }
 
   // Ownership verification: user can only upload to their own user directory
