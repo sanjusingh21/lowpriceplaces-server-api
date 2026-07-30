@@ -78,6 +78,17 @@ model Listing {
   moderatedById   Int?
   moderatedBy     User?        @relation("ListingModerator", fields: [moderatedById], references: [id], onDelete: SetNull)
   moderatedAt     DateTime?
+  cityId          Int?
+  city            City?        @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  subCityId       Int?
+  subCity         SubCity?     @relation(fields: [subCityId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([subCategoryId])
+  @@index([cityId])
+  @@index([subCityId])
+  @@index([createdAt])
 }
 
 model Review {
@@ -97,6 +108,12 @@ model Review {
   images          String[] // Array of image URLs/paths, native Postgres array
   videos          String[] // Array of video URLs/paths, native Postgres array
   createdAt       DateTime       @default(now())
+
+  @@index([listingId])
+  @@index([storeId])
+  @@index([serviceId])
+  @@index([profileId])
+  @@index([buyerId])
 }
 
 model Inquiry {
@@ -110,6 +127,10 @@ model Inquiry {
   status       String    @default("UNREAD") // UNREAD, READ, REPLIED
   createdAt    DateTime  @default(now())
   messages     Message[]
+
+  @@index([listingId])
+  @@index([buyerId])
+  @@index([status])
 }
 
 model Message {
@@ -120,6 +141,9 @@ model Message {
   sender    User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
   text      String
   createdAt DateTime @default(now())
+
+  @@index([inquiryId])
+  @@index([senderId])
 }
 
 model SEOMeta {
@@ -131,10 +155,27 @@ model SEOMeta {
 }
 
 model City {
-  id        Int     @id @default(autoincrement())
-  name      String  @unique
-  emoji     String  @default("📍")
-  imagePath String?
+  id                  Int       @id @default(autoincrement())
+  name                String    @unique
+  emoji               String    @default("📍")
+  imagePath           String?
+  state               String?
+  activeListingsCount Int       @default(0)
+  subCities           SubCity[]
+  listings            Listing[]
+}
+
+model SubCity {
+  id                  Int       @id @default(autoincrement())
+  name                String
+  emoji               String    @default("📍")
+  cityId              Int
+  city                City      @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  listings            Listing[]
+  activeListingsCount Int       @default(0)
+
+  @@unique([name, cityId])
+  @@index([cityId])
 }
 
 model Store {

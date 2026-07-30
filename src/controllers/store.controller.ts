@@ -7,180 +7,203 @@ export class StoreController {
   // Get nearby stores (filtered by category, sorted by distance)
   static async getStores(req: Request, res: Response) {
     try {
-      const { lat, lng, category, page, limit } = req.query;
-
-      const filter: any = {};
-      if (category) {
-        filter.category = category as string;
-      }
-
-      const stores = await prisma.store.findMany({
-        where: filter,
-        include: {
-          reviews: true,
-        },
-      });
+      const { lat, lng, category, page, limit, location } = req.query;
 
       const userLat = parseFloat(lat as string);
       const userLng = parseFloat(lng as string);
+      const hasCoordinates = !isNaN(userLat) && !isNaN(userLng);
+
+      // 1. Fetch static stores
+      const storeFilter: any = {};
+      if (category) {
+        storeFilter.category = { contains: category as string, mode: "insensitive" };
+      }
+      const stores = await prisma.store.findMany({
+        where: storeFilter,
+        include: { reviews: true },
+      });
 
       const mappedStores = stores.map((store) => {
         let distance: number | null = null;
-        if (
-          !isNaN(userLat) &&
-          !isNaN(userLng) &&
-          store.latitude &&
-          store.longitude
-        ) {
-          distance = calculateDistance(
-            userLat,
-            userLng,
-            store.latitude,
-            store.longitude
-          );
+        if (hasCoordinates && store.latitude && store.longitude) {
+          distance = calculateDistance(userLat, userLng, store.latitude, store.longitude);
         }
-
-        const avg =
-          store.reviews.length > 0
-            ? store.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
-              store.reviews.length
-            : store.rating;
-
+        const avg = store.reviews.length > 0
+          ? store.reviews.reduce((acc, curr) => acc + curr.rating, 0) / store.reviews.length
+          : store.rating;
         return {
-          ...store,
+          id: store.id,
+          name: store.name,
+          category: store.category,
+          imagePath: store.imagePath,
+          location: store.location,
+          latitude: store.latitude,
+          longitude: store.longitude,
+          rating: avg,
+          contact: store.contact || "",
           distance,
           averageRating: Number(avg.toFixed(1)),
           totalReviews: store.reviews.length,
           isSellerProfile: false,
+          createdAt: store.createdAt || new Date(),
         };
       });
 
-      // Query seller profiles
-      const hasCoordinates = !isNaN(userLat) && !isNaN(userLng);
-      let profiles: any[] = [];
-      let usedRecentFallback = false;
+      // 2. Fetch profiles
+      const profileFilter: any = {};
+      if (category) {
+        profileFilter.businessCategory = { contains: category as string, mode: "insensitive" };
+      }
+      const profilesData = await prisma.profile.findMany({
+        where: profileFilter,
+        include: { reviews: true },
+      });
 
-      if (hasCoordinates) {
-        const profileFilter: any = {
-          latitude: { not: null },
-          longitude: { not: null },
+      const mappedProfiles = profilesData.map((profile) => {
+        let distance: number | null = null;
+        if (hasCoordinates && profile.latitude && profile.longitude) {
+          distance = calculateDistance(userLat, userLng, profile.latitude, profile.longitude);
+        }
+        const avg = profile.reviews.length > 0
+          ? profile.reviews.reduce((acc, curr) => acc + curr.rating, 0) / profile.reviews.length
+          : 5.0;
+        return {
+          id: -profile.userId,
+          name: profile.displayName || profile.fullName,
+          category: profile.businessCategory,
+          imagePath: profile.imagePath || null,
+          location: profile.location || "",
+          latitude: profile.latitude,
+          longitude: profile.longitude,
+          rating: avg,
+          contact: profile.whatsAppNumber || profile.mobileNumber || "",
+          createdAt: new Date(),
+          distance,
+          averageRating: Number(avg.toFixed(1)),
+          totalReviews: profile.reviews.length,
+          isSellerProfile: true,
         };
-        if (category) {
-          profileFilter.businessCategory = category as string;
+      });
+
+      // 3. Fetch listings under category 39 ("All stores")
+      const listings = await prisma.listing.findMany({
+        where: {
+          categoryId: 39,
+          status: "ACTIVE",
+          ...(category ? {
+            OR: [
+              { category: { name: { contains: category as string, mode: "insensitive" } } },
+              { subCategory: { name: { contains: category as string, mode: "insensitive" } } }
+            ]
+          } : {})
+        },
+        include: {
+          category: true,
+          subCategory: true,
+          reviews: true
+        }
+      });
+
+      const mappedListings = listings.map((l) => {
+        let distance: number | null = null;
+        if (hasCoordinates && l.latitude && l.longitude) {
+          distance = calculateDistance(userLat, userLng, l.latitude, l.longitude);
+        }
+        const avg = l.reviews.length > 0
+          ? l.reviews.reduce((acc, curr) => acc + curr.rating, 0) / l.reviews.length
+          : 5.0;
+
+        let firstImage: string | null = null;
+        if (l.imagePath) {
+          const parts = l.imagePath.split(",");
+          if (parts.length > 0) {
+            firstImage = parts[0].trim();
+          }
         }
 
-        const tempProfiles = await prisma.profile.findMany({
-          where: profileFilter,
-          include: {
-            reviews: true,
-          },
+        return {
+          id: l.id,
+          name: l.title,
+          category: l.subCategory?.name || l.category?.name || "Store",
+          imagePath: firstImage,
+          location: l.location,
+          latitude: l.latitude,
+          longitude: l.longitude,
+          rating: avg,
+          contact: l.whatsappNumber || l.contactNumber || "",
+          createdAt: l.createdAt,
+          distance,
+          averageRating: Number(avg.toFixed(1)),
+          totalReviews: l.reviews.length,
+          isSellerProfile: false,
+          isListing: true
+        };
+      });
+
+      // Combine all sources
+      const combined = [...mappedStores, ...mappedProfiles, ...mappedListings];
+
+      // Location filtering & fallbacks
+      let finalResults = combined;
+      if (location && (location as string).trim() !== "") {
+        const queryLower = (location as string).toLowerCase().trim();
+        const primarySegment = queryLower.split(',')[0].trim();
+
+        // Step A: Filter by city/local match
+        let localMatches = combined.filter(item => {
+          if (!item.location) return false;
+          return item.location.toLowerCase().includes(primarySegment);
         });
 
-        const profilesWithDistance = tempProfiles.map((profile) => {
-          const distance = calculateDistance(
-            userLat,
-            userLng,
-            profile.latitude,
-            profile.longitude
-          );
-          const avg =
-            profile.reviews.length > 0
-              ? profile.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
-                profile.reviews.length
-              : 5.0;
-          return {
-            id: -profile.userId,
-            name: profile.displayName || profile.fullName,
-            category: profile.businessCategory,
-            imagePath: profile.imagePath || null,
-            location: profile.location || "",
-            latitude: profile.latitude,
-            longitude: profile.longitude,
-            rating: avg,
-            contact: profile.whatsAppNumber || profile.mobileNumber || "",
-            createdAt: new Date(),
-            distance,
-            averageRating: Number(avg.toFixed(1)),
-            totalReviews: profile.reviews.length,
-            isSellerProfile: true,
-          };
-        });
-
-        const nearbyProfiles = profilesWithDistance.filter(
-          (p) => p.distance !== null && p.distance <= 50
-        );
-
-        if (nearbyProfiles.length > 0) {
-          profiles = nearbyProfiles;
-        } else {
-          usedRecentFallback = true;
+        // Step B: Fallback to state match if < 5 local matches
+        if (localMatches.length < 5) {
+          const parts = queryLower.split(',');
+          const stateSegment = parts.length > 1 ? parts[parts.length - 1].trim() : "";
+          if (stateSegment && stateSegment !== "india") {
+            const stateMatches = combined.filter(item => {
+              if (!item.location) return false;
+              return item.location.toLowerCase().includes(stateSegment);
+            });
+            if (stateMatches.length >= 5) {
+              localMatches = stateMatches;
+            } else {
+              // Nationwide fallback (all results)
+              localMatches = combined;
+            }
+          } else {
+            // Nationwide fallback (all results)
+            localMatches = combined;
+          }
         }
-      } else {
-        usedRecentFallback = true;
+        finalResults = localMatches;
       }
 
-      if (usedRecentFallback) {
-        const fallbackFilter: any = {};
-        if (category) {
-          fallbackFilter.businessCategory = category as string;
-        }
-
-        const recentProfiles = await prisma.profile.findMany({
-          where: fallbackFilter,
-          orderBy: {
-            id: "desc",
-          },
-          take: 10,
-          include: {
-            reviews: true,
-          },
-        });
-
-        profiles = recentProfiles.map((profile) => {
-          const avg =
-            profile.reviews.length > 0
-              ? profile.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
-                profile.reviews.length
-              : 5.0;
-          return {
-            id: -profile.userId,
-            name: profile.displayName || profile.fullName,
-            category: profile.businessCategory,
-            imagePath: profile.imagePath || null,
-            location: profile.location || "",
-            latitude: profile.latitude,
-            longitude: profile.longitude,
-            rating: avg,
-            contact: profile.whatsAppNumber || profile.mobileNumber || "",
-            createdAt: new Date(),
-            distance: null,
-            averageRating: Number(avg.toFixed(1)),
-            totalReviews: profile.reviews.length,
-            isSellerProfile: true,
-            isRecentFallback: true,
-          };
-        });
-      }
-
-      const combined = [...mappedStores, ...profiles];
-
+      // Proximity sorting if coordinates are present
       if (hasCoordinates) {
-        combined.sort((a, b) => {
+        finalResults.sort((a, b) => {
           if (a.distance === null && b.distance === null) return 0;
           if (a.distance === null) return 1;
           if (b.distance === null) return -1;
           return a.distance - b.distance;
         });
+      } else {
+        // Fallback: sort newest first
+        finalResults.sort((a, b) => {
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+        });
       }
 
+      // Pagination
       const pageNum = parseInt(page as string);
       const limitNum = parseInt(limit as string);
       if (!isNaN(pageNum) && !isNaN(limitNum)) {
         const startIndex = (pageNum - 1) * limitNum;
         const endIndex = pageNum * limitNum;
-        return res.json(combined.slice(startIndex, endIndex));
+        return res.json(finalResults.slice(startIndex, endIndex));
       } else {
-        return res.json(combined);
+        return res.json(finalResults);
       }
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
@@ -276,7 +299,7 @@ export class StoreController {
         return res.json({ store: enrichedStore, relatedListings });
       }
 
-      const store = await prisma.store.findUnique({
+      let store = await prisma.store.findUnique({
         where: { id },
         include: {
           reviews: {
@@ -291,55 +314,130 @@ export class StoreController {
           },
         },
       });
-      if (!store) return res.status(404).json({ error: "Store not found" });
 
+      let mappedStore: any = null;
+      let relatedListings: any[] = [];
       const userLat = parseFloat(lat as string);
       const userLng = parseFloat(lng as string);
+
+      if (!store) {
+        // Fallback: search listings under category 39 ("All stores")
+        const listing = await prisma.listing.findUnique({
+          where: { id },
+          include: {
+            category: true,
+            subCategory: true,
+            reviews: {
+              include: {
+                buyer: { select: { username: true } },
+              },
+              orderBy: { createdAt: "desc" },
+            },
+            seller: {
+              select: {
+                id: true,
+                username: true,
+                profile: true,
+              },
+            },
+          },
+        });
+
+        if (!listing) {
+          return res.status(404).json({ error: "Store not found" });
+        }
+
+        const avg = listing.reviews.length > 0
+          ? listing.reviews.reduce((acc, curr) => acc + curr.rating, 0) / listing.reviews.length
+          : 5.0;
+
+        let firstImage: string | null = null;
+        if (listing.imagePath) {
+          const parts = listing.imagePath.split(",");
+          if (parts.length > 0) {
+            firstImage = parts[0].trim();
+          }
+        }
+
+        mappedStore = {
+          id: listing.id,
+          name: listing.title,
+          category: listing.subCategory?.name || listing.category?.name || "Store",
+          imagePath: firstImage,
+          location: listing.location,
+          latitude: listing.latitude,
+          longitude: listing.longitude,
+          rating: avg,
+          contact: listing.whatsappNumber || listing.contactNumber || "",
+          about: listing.description,
+          averageRating: Number(avg.toFixed(1)),
+          totalReviews: listing.reviews.length,
+          reviews: listing.reviews,
+          isSellerProfile: false,
+          isListing: true,
+          sellerId: listing.sellerId,
+        };
+
+        // Query related store listings
+        relatedListings = await prisma.listing.findMany({
+          where: {
+            categoryId: 39,
+            status: "ACTIVE",
+            id: { not: listing.id },
+          },
+          include: {
+            category: true,
+            subCategory: true,
+            reviews: { select: { rating: true } },
+          },
+          take: 6,
+        });
+      } else {
+        const s = store!;
+        const avg = s.reviews.length > 0
+          ? s.reviews.reduce((acc, curr) => acc + curr.rating, 0) / s.reviews.length
+          : s.rating;
+
+        mappedStore = {
+          ...s,
+          rating: avg,
+          averageRating: Number(avg.toFixed(1)),
+          totalReviews: s.reviews.length,
+          reviews: s.reviews,
+          isSellerProfile: false,
+        };
+
+        relatedListings = await prisma.listing.findMany({
+          where: {
+            location: { contains: s.location, mode: "insensitive" },
+            status: "ACTIVE",
+          },
+          include: {
+            category: true,
+            subCategory: true,
+            reviews: { select: { rating: true } },
+          },
+          take: 6,
+        });
+      }
+
       let distance: number | null = null;
       if (
         !isNaN(userLat) &&
         !isNaN(userLng) &&
-        store.latitude &&
-        store.longitude
+        mappedStore.latitude &&
+        mappedStore.longitude
       ) {
         distance = calculateDistance(
           userLat,
           userLng,
-          store.latitude,
-          store.longitude
+          mappedStore.latitude,
+          mappedStore.longitude
         );
       }
+      mappedStore.distance = distance;
 
-      const relatedListings = await prisma.listing.findMany({
-        where: {
-          location: { contains: store.location, mode: "insensitive" },
-          status: "ACTIVE",
-        },
-        include: {
-          category: true,
-          subCategory: true,
-          reviews: {
-            select: { rating: true },
-          },
-        },
-        take: 6,
-      });
-
-      const avg =
-        store.reviews.length > 0
-          ? store.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
-            store.reviews.length
-          : store.rating;
-
-      const enrichedStore = {
-        ...store,
-        distance,
-        averageRating: Number(avg.toFixed(1)),
-        totalReviews: store.reviews.length,
-        isSellerProfile: false,
-      };
-
-      return res.json({ store: enrichedStore, relatedListings });
+      return res.json({ store: mappedStore, relatedListings });
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
     }

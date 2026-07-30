@@ -7,15 +7,21 @@ export class ServiceController {
   // Get nearby services
   static async getServices(req: Request, res: Response) {
     try {
-      const { lat, lng, serviceType, page, limit } = req.query;
+      const { lat, lng, serviceType, page, limit, location } = req.query;
 
-      const filter: any = {
+      const userLat = parseFloat(lat as string);
+      const userLng = parseFloat(lng as string);
+      const hasCoordinates = !isNaN(userLat) && !isNaN(userLng);
+
+      // 1. Fetch listings
+      const listingFilter: any = {
         listingType: "SERVICES",
         status: "ACTIVE",
+        categoryId: { not: 39 }, // Exclude "All stores" category
       };
 
       if (serviceType) {
-        filter.OR = [
+        listingFilter.OR = [
           {
             category: {
               name: { contains: serviceType as string, mode: "insensitive" },
@@ -30,7 +36,7 @@ export class ServiceController {
       }
 
       const listings = await prisma.listing.findMany({
-        where: filter,
+        where: listingFilter,
         include: {
           category: true,
           subCategory: true,
@@ -39,30 +45,17 @@ export class ServiceController {
           },
           reviews: true,
         },
-        orderBy: {
-          createdAt: "desc",
-        },
       });
 
-      const userLat = parseFloat(lat as string);
-      const userLng = parseFloat(lng as string);
-
-      const mapped = listings.map((l) => {
+      const mappedListings = listings.map((l) => {
         let distance: number | null = null;
-        if (!isNaN(userLat) && !isNaN(userLng) && l.latitude && l.longitude) {
-          distance = calculateDistance(
-            userLat,
-            userLng,
-            l.latitude,
-            l.longitude
-          );
+        if (hasCoordinates && l.latitude && l.longitude) {
+          distance = calculateDistance(userLat, userLng, l.latitude, l.longitude);
         }
 
-        const avg =
-          l.reviews.length > 0
-            ? l.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
-              l.reviews.length
-            : 0;
+        const avg = l.reviews.length > 0
+          ? l.reviews.reduce((acc, curr) => acc + curr.rating, 0) / l.reviews.length
+          : 5.0;
 
         let firstImage: string | null = null;
         if (l.imagePath) {
@@ -82,33 +75,122 @@ export class ServiceController {
           latitude: l.latitude,
           longitude: l.longitude,
           price: l.price,
-          rating: avg || 5.0,
-          averageRating: avg || 5.0,
+          rating: avg,
+          averageRating: avg,
           totalReviews: l.reviews.length,
           contact: l.whatsappNumber || l.contactNumber || null,
           distance,
           verified: l.seller?.emailVerified || false,
           createdAt: l.createdAt,
+          isListing: true,
         };
       });
 
-      if (!isNaN(userLat) && !isNaN(userLng)) {
-        mapped.sort((a, b) => {
+      // 2. Fetch static services
+      const serviceFilter: any = {};
+      if (serviceType) {
+        serviceFilter.serviceType = { contains: serviceType as string, mode: "insensitive" };
+      }
+      const staticServices = await prisma.service.findMany({
+        where: serviceFilter,
+        include: {
+          reviews: true,
+        },
+      });
+
+      const mappedStatic = staticServices.map((s) => {
+        let distance: number | null = null;
+        if (hasCoordinates && s.latitude && s.longitude) {
+          distance = calculateDistance(userLat, userLng, s.latitude, s.longitude);
+        }
+        const avg = s.reviews.length > 0
+          ? s.reviews.reduce((acc, curr) => acc + curr.rating, 0) / s.reviews.length
+          : s.rating;
+        return {
+          id: s.id,
+          name: s.name,
+          serviceType: s.serviceType,
+          categoryName: "Services",
+          imagePath: s.imagePath || null,
+          location: s.location || "",
+          latitude: s.latitude,
+          longitude: s.longitude,
+          price: 0,
+          rating: avg,
+          averageRating: avg,
+          totalReviews: s.reviews.length,
+          contact: s.contact || null,
+          distance,
+          verified: false,
+          createdAt: s.createdAt || new Date(),
+          isListing: false,
+        };
+      });
+
+      // Combine both sources
+      const combined = [...mappedListings, ...mappedStatic];
+
+      // Location filtering & fallbacks
+      let finalResults = combined;
+      if (location && (location as string).trim() !== "") {
+        const queryLower = (location as string).toLowerCase().trim();
+        const primarySegment = queryLower.split(',')[0].trim();
+
+        // Step A: Filter by city/local match
+        let localMatches = combined.filter(item => {
+          if (!item.location) return false;
+          return item.location.toLowerCase().includes(primarySegment);
+        });
+
+        // Step B: Fallback to state match if < 5 local matches
+        if (localMatches.length < 5) {
+          const parts = queryLower.split(',');
+          const stateSegment = parts.length > 1 ? parts[parts.length - 1].trim() : "";
+          if (stateSegment && stateSegment !== "india") {
+            const stateMatches = combined.filter(item => {
+              if (!item.location) return false;
+              return item.location.toLowerCase().includes(stateSegment);
+            });
+            if (stateMatches.length >= 5) {
+              localMatches = stateMatches;
+            } else {
+              // Nationwide fallback
+              localMatches = combined;
+            }
+          } else {
+            // Nationwide fallback
+            localMatches = combined;
+          }
+        }
+        finalResults = localMatches;
+      }
+
+      // Sorting
+      if (hasCoordinates) {
+        finalResults.sort((a, b) => {
           if (a.distance === null && b.distance === null) return 0;
           if (a.distance === null) return 1;
           if (b.distance === null) return -1;
           return a.distance - b.distance;
         });
+      } else {
+        // Fallback: sort newest first
+        finalResults.sort((a, b) => {
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+        });
       }
 
+      // Pagination
       const pageNum = parseInt(page as string);
       const limitNum = parseInt(limit as string);
       if (!isNaN(pageNum) && !isNaN(limitNum)) {
         const startIndex = (pageNum - 1) * limitNum;
         const endIndex = pageNum * limitNum;
-        return res.json(mapped.slice(startIndex, endIndex));
+        return res.json(finalResults.slice(startIndex, endIndex));
       } else {
-        return res.json(mapped);
+        return res.json(finalResults);
       }
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
@@ -122,7 +204,7 @@ export class ServiceController {
       const { lat, lng } = req.query;
 
       const listing = await prisma.listing.findFirst({
-        where: { id, listingType: "SERVICES" },
+        where: { id, listingType: "SERVICES", categoryId: { not: 39 } },
         include: {
           category: true,
           subCategory: true,

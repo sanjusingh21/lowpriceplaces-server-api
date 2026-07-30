@@ -2,6 +2,8 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
+import path from "path";
+import compression from "compression";
 import { prisma } from "./config/db";
 import { S3Service } from "./services/s3.service";
 
@@ -20,8 +22,11 @@ import userRoutes from "./routes/user.routes";
 import adminRoutes from "./routes/admin.routes";
 import cityRoutes from "./routes/city.routes";
 import mediaRoutes from "./routes/media.routes";
+import suggestionRoutes from "./routes/suggestion.routes";
+import { syncAllCityListingCounts } from "./utils/cityCounter";
 
 const app = express();
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -52,6 +57,7 @@ const PORT = process.env.PORT || 5000;
 
 // Express Middlewares
 app.use(cors());
+app.use(compression());
 app.use(express.json());
 
 // Background Cleanup: Hourly cleanup of uncommitted database metadata records older than 24 hours
@@ -115,8 +121,15 @@ app.use("/api/users", userRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/cities", cityRoutes);
 app.use("/api/media", mediaRoutes);
+app.use("/api/suggestions", suggestionRoutes);
 
 // Start Server
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`lowpriceplaces API Server running on port ${PORT}`);
+  try {
+    await syncAllCityListingCounts();
+    console.log("Successfully synchronized active listing counts for cities and sub-cities on startup.");
+  } catch (err) {
+    console.error("Failed to synchronize listing counts on startup:", err);
+  }
 });

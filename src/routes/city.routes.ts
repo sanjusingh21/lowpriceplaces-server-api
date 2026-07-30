@@ -4,6 +4,7 @@ import { authenticateToken, requireRole } from "../middlewares/auth";
 
 const router = Router();
 
+// Cities
 router.get("/", CityController.getCities);
 
 router.post(
@@ -25,6 +26,31 @@ router.delete(
   authenticateToken,
   requireRole(["ADMIN"]),
   CityController.deleteCity
+);
+
+// Sub-Cities CRUD
+router.get("/sub-cities", CityController.getAllSubCities);
+router.get("/:cityId/sub-cities", CityController.getSubCitiesForCity);
+
+router.post(
+  "/sub-cities",
+  authenticateToken,
+  requireRole(["ADMIN"]),
+  CityController.createSubCity
+);
+
+router.put(
+  "/sub-cities/:id",
+  authenticateToken,
+  requireRole(["ADMIN"]),
+  CityController.updateSubCity
+);
+
+router.delete(
+  "/sub-cities/:id",
+  authenticateToken,
+  requireRole(["ADMIN"]),
+  CityController.deleteSubCity
 );
 
 export default router;

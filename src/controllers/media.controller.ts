@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import path from "path";
 import { S3Service } from "../services/s3.service";
 import { MediaModel } from "../models/media.model";
 import { bucketName } from "../config/aws";
@@ -194,6 +195,41 @@ export class MediaController {
     } catch (error: any) {
       console.error("Delete media error:", error);
       return res.status(500).json({ error: "Failed to delete media: " + error.message });
+    }
+  }
+
+  /**
+   * Upload file directly to local server storage
+   */
+  static async uploadDirectly(req: AuthenticatedRequest, res: Response) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file was uploaded or file was rejected by filter." });
+      }
+
+      const key = req.file.filename;
+      const extension = path.extname(req.file.originalname).toLowerCase();
+      const protocol = req.protocol;
+      const host = req.get("host");
+      
+      // Construct public serving URL
+      const url = `${protocol}://${host}/uploads/${key}`;
+
+      const media = await MediaModel.create({
+        key,
+        url,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        extension,
+        uploadedBy: req.user?.id || undefined,
+        entityType: req.body.entityType || undefined,
+        entityId: req.body.entityId ? parseInt(req.body.entityId, 10) : undefined
+      });
+
+      return res.status(201).json(media);
+    } catch (error: any) {
+      console.error("Direct upload error:", error);
+      return res.status(500).json({ error: "Failed to upload file directly: " + error.message });
     }
   }
 }

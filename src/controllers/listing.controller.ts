@@ -3,6 +3,7 @@ import { prisma } from "../config/db";
 import { calculateDistance } from "../utils/distance";
 import { promoteListingImages } from "../utils/s3Promoter";
 import { AuthenticatedRequest } from "../middlewares/auth";
+import { refreshCityListingCount } from "../utils/cityCounter";
 
 export class ListingController {
   // Get listings with filters, search, and pagination
@@ -12,6 +13,8 @@ export class ListingController {
         q,
         categoryId,
         subCategoryId,
+        cityId,
+        subCityId,
         minPrice,
         maxPrice,
         location,
@@ -55,6 +58,12 @@ export class ListingController {
       }
       if (subCategoryId) {
         filters.subCategoryId = parseInt(subCategoryId as string);
+      }
+      if (cityId) {
+        filters.cityId = parseInt(cityId as string);
+      }
+      if (subCityId) {
+        filters.subCityId = parseInt(subCityId as string);
       }
 
       if (minPrice || maxPrice) {
@@ -133,11 +142,20 @@ export class ListingController {
         orderOption = { createdAt: "desc" };
       }
 
-      const listings = await prisma.listing.findMany({
+      const pageNum = parseInt(req.query.page as string);
+      const limitNum = parseInt(req.query.limit as string);
+      const hasPagination = !isNaN(pageNum) && !isNaN(limitNum);
+      const userLat = parseFloat(lat as string);
+      const userLng = parseFloat(lng as string);
+      const isDistanceSort = sortBy === "distance_asc" && !isNaN(userLat) && !isNaN(userLng);
+
+      const findOptions: any = {
         where: filters,
         include: {
           category: true,
           subCategory: true,
+          city: true,
+          subCity: true,
           seller: {
             select: { username: true, role: true },
           },
@@ -149,12 +167,19 @@ export class ListingController {
           },
         },
         orderBy: orderOption,
-      });
+      };
 
-      const enrichedListings = listings.map((l) => {
+      if (hasPagination && !isDistanceSort) {
+        findOptions.skip = (pageNum - 1) * limitNum;
+        findOptions.take = limitNum;
+      }
+
+      const listings = await prisma.listing.findMany(findOptions) as any[];
+
+      const enrichedListings = listings.map((l: any) => {
         const avg =
           l.reviews.length > 0
-            ? l.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
+            ? l.reviews.reduce((acc: number, curr: any) => acc + curr.rating, 0) /
               l.reviews.length
             : 0;
         return {
@@ -164,9 +189,6 @@ export class ListingController {
         };
       });
 
-      const userLat = parseFloat(lat as string);
-      const userLng = parseFloat(lng as string);
-
       let mappedListings = enrichedListings.map((l) => {
         let distance: number | null = null;
         if (!isNaN(userLat) && !isNaN(userLng) && l.latitude && l.longitude) {
@@ -175,23 +197,20 @@ export class ListingController {
         return { ...l, distance };
       });
 
-      if (sortBy === "distance_asc" && !isNaN(userLat) && !isNaN(userLng)) {
+      if (isDistanceSort) {
         mappedListings.sort((a, b) => {
           if (a.distance === null) return 1;
           if (b.distance === null) return -1;
           return a.distance - b.distance;
         });
+        if (hasPagination) {
+          const startIndex = (pageNum - 1) * limitNum;
+          const endIndex = pageNum * limitNum;
+          mappedListings = mappedListings.slice(startIndex, endIndex);
+        }
       }
 
-      const pageNum = parseInt(req.query.page as string);
-      const limitNum = parseInt(req.query.limit as string);
-      if (!isNaN(pageNum) && !isNaN(limitNum)) {
-        const startIndex = (pageNum - 1) * limitNum;
-        const endIndex = pageNum * limitNum;
-        return res.json(mappedListings.slice(startIndex, endIndex));
-      } else {
-        return res.json(mappedListings);
-      }
+      return res.json(mappedListings);
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
     }
@@ -214,6 +233,8 @@ export class ListingController {
         contactNumber,
         categoryId,
         subCategoryId,
+        cityId,
+        subCityId,
         imageUrls,
         imagePath: providedImagePath,
       } = req.body;
@@ -222,7 +243,6 @@ export class ListingController {
         !title ||
         !description ||
         !price ||
-        !location ||
         !whatsappNumber ||
         !contactNumber ||
         !categoryId
@@ -230,7 +250,21 @@ export class ListingController {
         return res.status(400).json({ error: "Required fields are missing." });
       }
 
+      let finalLocation = location || "";
+      const resolvedCityId = cityId ? parseInt(cityId) : null;
+      const resolvedSubCityId = subCityId ? parseInt(subCityId) : null;
+
+      if (resolvedCityId && resolvedSubCityId) {
+        const city = await prisma.city.findUnique({ where: { id: resolvedCityId } });
+        const subCity = await prisma.subCity.findUnique({ where: { id: resolvedSubCityId } });
+        if (city && subCity) {
+          finalLocation = `${subCity.name}, ${city.name}${city.state ? `, ${city.state}` : ""}`;
+        }
+      }
+
       const imagePath = imageUrls || providedImagePath || null;
+
+      const resolvedListingType = parseInt(categoryId) === 39 ? "SALES" : (listingType || "SALES");
 
       const listing = await prisma.listing.create({
         data: {
@@ -238,9 +272,11 @@ export class ListingController {
           description,
           price: parseFloat(price),
           priceMax: priceMax ? parseFloat(priceMax) : null,
-          listingType: listingType || "SALES",
+          listingType: resolvedListingType,
           discountPercent: parseFloat(discountPercent || 0),
-          location,
+          location: finalLocation,
+          cityId: resolvedCityId,
+          subCityId: resolvedSubCityId,
           whatsappNumber,
           contactNumber,
           imagePath,
@@ -253,6 +289,10 @@ export class ListingController {
               : "ACTIVE",
         },
       });
+
+      if (listing.status === "ACTIVE") {
+        await refreshCityListingCount(listing.cityId, listing.subCityId);
+      }
 
       const io = req.app.get("io");
       if (io) {
@@ -277,6 +317,8 @@ export class ListingController {
         include: {
           category: true,
           subCategory: true,
+          city: true,
+          subCity: true,
           seller: {
             select: {
               id: true,
@@ -373,6 +415,11 @@ export class ListingController {
         io.emit("listings_update", { action: "update", listing: updatedListing });
       }
 
+      await refreshCityListingCount(listing.cityId, listing.subCityId);
+      if (updatedListing.cityId !== listing.cityId || updatedListing.subCityId !== listing.subCityId) {
+        await refreshCityListingCount(updatedListing.cityId, updatedListing.subCityId);
+      }
+
       return res.json(updatedListing);
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
@@ -397,6 +444,8 @@ export class ListingController {
         contactNumber,
         categoryId,
         subCategoryId,
+        cityId,
+        subCityId,
         imageUrls,
         imagePath: providedImagePath,
       } = req.body;
@@ -421,10 +470,23 @@ export class ListingController {
       if (price !== undefined) updatedData.price = parseFloat(price);
       if (priceMax !== undefined)
         updatedData.priceMax = priceMax ? parseFloat(priceMax) : null;
-      if (listingType !== undefined) updatedData.listingType = listingType;
       if (discountPercent !== undefined)
         updatedData.discountPercent = parseFloat(discountPercent);
       if (location !== undefined) updatedData.location = location;
+      if (cityId !== undefined) updatedData.cityId = cityId ? parseInt(cityId) : null;
+      if (subCityId !== undefined) updatedData.subCityId = subCityId ? parseInt(subCityId) : null;
+
+      const finalCityId = cityId !== undefined ? (cityId ? parseInt(cityId) : null) : listing.cityId;
+      const finalSubCityId = subCityId !== undefined ? (subCityId ? parseInt(subCityId) : null) : listing.subCityId;
+
+      if (finalCityId && finalSubCityId && (cityId !== undefined || subCityId !== undefined)) {
+        const city = await prisma.city.findUnique({ where: { id: finalCityId } });
+        const subCity = await prisma.subCity.findUnique({ where: { id: finalSubCityId } });
+        if (city && subCity) {
+          updatedData.location = `${subCity.name}, ${city.name}${city.state ? `, ${city.state}` : ""}`;
+        }
+      }
+
       if (whatsappNumber !== undefined)
         updatedData.whatsappNumber = whatsappNumber;
       if (contactNumber !== undefined)
@@ -435,6 +497,13 @@ export class ListingController {
         updatedData.subCategoryId = subCategoryId
           ? parseInt(subCategoryId)
           : null;
+
+      const finalCategoryId = categoryId !== undefined ? parseInt(categoryId) : listing.categoryId;
+      if (finalCategoryId === 39) {
+        updatedData.listingType = "SALES";
+      } else if (listingType !== undefined) {
+        updatedData.listingType = listingType;
+      }
 
       if (req.user.role === "USER") {
         updatedData.status = "PENDING";
@@ -453,6 +522,11 @@ export class ListingController {
 
       if (imagePaths) {
         await promoteListingImages(imagePaths);
+      }
+
+      await refreshCityListingCount(listing.cityId, listing.subCityId);
+      if (updatedListing.cityId !== listing.cityId || updatedListing.subCityId !== listing.subCityId) {
+        await refreshCityListingCount(updatedListing.cityId, updatedListing.subCityId);
       }
 
       return res.json(updatedListing);
@@ -485,6 +559,10 @@ export class ListingController {
       const io = req.app.get("io");
       if (io) {
         io.emit("listings_update", { action: "delete", id: listingId });
+      }
+
+      if (listing.status === "ACTIVE") {
+        await refreshCityListingCount(listing.cityId, listing.subCityId);
       }
 
       return res.json({ message: "Listing deleted successfully." });

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { MediaController } from "../controllers/media.controller";
 import { authenticateToken } from "../middlewares/auth";
 import { validatePresignedUpload, validateUploadComplete } from "../middlewares/validation";
+import { upload } from "../middlewares/upload";
 
 const router = Router();
 
@@ -32,5 +33,13 @@ router.delete("/:id", authenticateToken, MediaController.deleteMedia);
 
 // 6. Public redirect route for viewing private media (automatically signs and redirects)
 router.get("/view/*", MediaController.viewMedia);
+
+// 7. Direct file upload to local server
+router.post(
+  "/upload",
+  authenticateToken,
+  upload.single("file"),
+  MediaController.uploadDirectly
+);
 
 export default router;
