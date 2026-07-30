@@ -359,22 +359,22 @@ async function main() {
 
   // 6. Seed default Cities
   const defaultCities = [
-    { name: "Mumbai", emoji: "🏙️" },
-    { name: "Delhi", emoji: "🏛️" },
-    { name: "Bangalore", emoji: "💻" },
-    { name: "Hyderabad", emoji: "🍛" },
-    { name: "Ahmedabad", emoji: "☀️" },
-    { name: "Chennai", emoji: "🏖️" },
-    { name: "Kolkata", emoji: "🌉" },
-    { name: "Pune", emoji: "⛰️" },
-    { name: "Jaipur", emoji: "🏯" },
-    { name: "Lucknow", emoji: "🏛️" }
+    { name: "Mumbai", emoji: "🏙️", state: "Maharashtra" },
+    { name: "Delhi", emoji: "🏛️", state: "Delhi" },
+    { name: "Bangalore", emoji: "💻", state: "Karnataka" },
+    { name: "Hyderabad", emoji: "🍛", state: "Telangana" },
+    { name: "Ahmedabad", emoji: "☀️", state: "Gujarat" },
+    { name: "Chennai", emoji: "🏖️", state: "Tamil Nadu" },
+    { name: "Kolkata", emoji: "🌉", state: "West Bengal" },
+    { name: "Pune", emoji: "⛰️", state: "Maharashtra" },
+    { name: "Jaipur", emoji: "🏯", state: "Rajasthan" },
+    { name: "Lucknow", emoji: "🏛️", state: "Uttar Pradesh" }
   ];
 
   for (const c of defaultCities) {
     await prisma.city.upsert({
       where: { name: c.name },
-      update: {},
+      update: { state: c.state },
       create: c
     });
   }

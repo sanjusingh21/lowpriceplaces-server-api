@@ -2,11 +2,11 @@
   "name": "glassify-server",
   "version": "1.0.0",
   "description": "Backend CMS and API Server for GlassifyClassifieds",
-  "main": "server.js",
+  "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && npx prisma migrate deploy && node server.js",
-    "dev": "npm run build && nodemon server.js",
+    "start": "npm run build && npx prisma migrate deploy && node dist/server.js",
+    "dev": "nodemon",
     "db:init": "prisma migrate dev --name init && prisma db seed",
     "db:seed": "prisma db seed"
   },
@@ -17,7 +17,9 @@
     "@aws-sdk/client-s3": "^3.1095.0",
     "@aws-sdk/s3-request-presigner": "^3.1095.0",
     "@prisma/client": "^5.12.1",
+    "@types/compression": "^1.8.1",
     "bcryptjs": "^2.4.3",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
@@ -29,14 +31,16 @@
     "uuid": "^14.0.1"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
     "@types/node": "^26.1.1",
+    "@types/nodemailer": "^8.0.1",
     "@types/uuid": "^11.0.0",
     "nodemon": "^3.1.0",
     "ts-node": "^10.9.2",
-    "typescript": "^7.0.2"
+    "typescript": "^5.4.5"
   }
 }
