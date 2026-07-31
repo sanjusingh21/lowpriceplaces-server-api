@@ -373,9 +373,19 @@ async function main() {
 
   for (const c of defaultCities) {
     await prisma.city.upsert({
-      where: { name: c.name },
+      where: {
+        name_parentCity: {
+          name: c.name,
+          parentCity: ""
+        }
+      },
       update: { state: c.state },
-      create: c
+      create: {
+        name: c.name,
+        emoji: c.emoji,
+        state: c.state,
+        parentCity: ""
+      }
     });
   }
   console.log("Default cities seeded successfully.");

@@ -203,7 +203,7 @@ export class ServiceController {
       const id = parseInt(req.params.id as string, 10);
       const { lat, lng } = req.query;
 
-      const listing = await prisma.listing.findFirst({
+      let listing: any = await prisma.listing.findFirst({
         where: { id, listingType: "SERVICES", categoryId: { not: 39 } },
         include: {
           category: true,
@@ -223,7 +223,76 @@ export class ServiceController {
           },
         },
       });
-      if (!listing) return res.status(404).json({ error: "Service not found" });
+
+      if (!listing) {
+        // Fallback to static Service model
+        const staticService = await prisma.service.findUnique({
+          where: { id },
+          include: {
+            reviews: {
+              include: {
+                buyer: {
+                  select: { username: true },
+                },
+              },
+              orderBy: {
+                createdAt: "desc",
+              },
+            },
+          },
+        });
+
+        if (!staticService) {
+          return res.status(404).json({ error: "Service not found" });
+        }
+
+        const userLat = parseFloat(lat as string);
+        const userLng = parseFloat(lng as string);
+        let distance: number | null = null;
+        if (
+          !isNaN(userLat) &&
+          !isNaN(userLng) &&
+          staticService.latitude &&
+          staticService.longitude
+        ) {
+          distance = calculateDistance(
+            userLat,
+            userLng,
+            staticService.latitude,
+            staticService.longitude
+          );
+        }
+
+        const avg =
+          staticService.reviews.length > 0
+            ? staticService.reviews.reduce((acc: number, curr: any) => acc + curr.rating, 0) /
+              staticService.reviews.length
+            : staticService.rating;
+
+        const enrichedService = {
+          id: staticService.id,
+          name: staticService.name,
+          serviceType: staticService.serviceType || "Service",
+          imagePath: staticService.imagePath || null,
+          location: staticService.location,
+          latitude: staticService.latitude,
+          longitude: staticService.longitude,
+          rating: avg,
+          averageRating: avg,
+          totalReviews: staticService.reviews.length,
+          reviews: staticService.reviews.map((r: any) => ({
+            id: r.id,
+            rating: r.rating,
+            comment: r.comment,
+            createdAt: r.createdAt,
+            buyer: r.buyer,
+          })),
+          contact: staticService.contact || null,
+          distance,
+        };
+
+        return res.json({ service: enrichedService, relatedListings: [] });
+      }
 
       const userLat = parseFloat(lat as string);
       const userLng = parseFloat(lng as string);
@@ -259,7 +328,7 @@ export class ServiceController {
 
       const avg =
         listing.reviews.length > 0
-          ? listing.reviews.reduce((acc, curr) => acc + curr.rating, 0) /
+          ? listing.reviews.reduce((acc: number, curr: any) => acc + curr.rating, 0) /
             listing.reviews.length
           : 5.0;
 
@@ -283,7 +352,7 @@ export class ServiceController {
         rating: avg,
         averageRating: avg,
         totalReviews: listing.reviews.length,
-        reviews: listing.reviews.map((r) => ({
+        reviews: listing.reviews.map((r: any) => ({
           id: r.id,
           rating: r.rating,
           comment: r.comment,
