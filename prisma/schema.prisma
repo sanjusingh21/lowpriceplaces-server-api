@@ -80,14 +80,11 @@ model Listing {
   moderatedAt     DateTime?
   cityId          Int?
   city            City?        @relation(fields: [cityId], references: [id], onDelete: SetNull)
-  subCityId       Int?
-  subCity         SubCity?     @relation(fields: [subCityId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([categoryId])
   @@index([subCategoryId])
   @@index([cityId])
-  @@index([subCityId])
   @@index([createdAt])
 }
 
@@ -156,26 +153,15 @@ model SEOMeta {
 
 model City {
   id                  Int       @id @default(autoincrement())
-  name                String    @unique
+  name                String    // Locality/Area Name
   emoji               String    @default("📍")
   imagePath           String?
   state               String?
+  parentCity          String?   // Parent City e.g., "Hyderabad"
   activeListingsCount Int       @default(0)
-  subCities           SubCity[]
   listings            Listing[]
-}
 
-model SubCity {
-  id                  Int       @id @default(autoincrement())
-  name                String
-  emoji               String    @default("📍")
-  cityId              Int
-  city                City      @relation(fields: [cityId], references: [id], onDelete: Cascade)
-  listings            Listing[]
-  activeListingsCount Int       @default(0)
-
-  @@unique([name, cityId])
-  @@index([cityId])
+  @@unique([name, parentCity])
 }
 
 model Store {

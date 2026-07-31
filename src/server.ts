@@ -23,6 +23,7 @@ import adminRoutes from "./routes/admin.routes";
 import cityRoutes from "./routes/city.routes";
 import mediaRoutes from "./routes/media.routes";
 import suggestionRoutes from "./routes/suggestion.routes";
+import searchRoutes from "./routes/search.routes";
 import { syncAllCityListingCounts } from "./utils/cityCounter";
 
 const app = express();
@@ -122,6 +123,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/cities", cityRoutes);
 app.use("/api/media", mediaRoutes);
 app.use("/api/suggestions", suggestionRoutes);
+app.use("/api/search", searchRoutes);
 
 // Start Server
 server.listen(PORT, async () => {

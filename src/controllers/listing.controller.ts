@@ -5,6 +5,74 @@ import { promoteListingImages } from "../utils/s3Promoter";
 import { AuthenticatedRequest } from "../middlewares/auth";
 import { refreshCityListingCount } from "../utils/cityCounter";
 
+function titleCase(str: string): string {
+  return str.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+}
+
+async function resolveOrCreateLocality(locationStr: string): Promise<number | null> {
+  if (!locationStr) return null;
+
+  const BLOCKED_POI_KEYWORDS = [
+    "station", "stop", "bus", "metro", "railway",
+    "mall", "shopping", "center", "centre", "plaza", "bazaar",
+    "hospital", "clinic", "diagnostic", "health", "medical",
+    "school", "college", "university", "academy", "institute",
+    "temple", "mosque", "masjid", "church", "gurudwara", "ashram", "shrine",
+    "building", "apartment", "residency", "tower", "villa", "house", "complex", "society",
+    "road", "street", "lane", "highway", "bypass", "flyover", "chowk", "gali"
+  ];
+
+  const parts = locationStr.split(",")
+    .map(p => p.trim())
+    .filter(p => {
+      if (!p) return false;
+      const lower = p.toLowerCase();
+      return !BLOCKED_POI_KEYWORDS.some(word => {
+        const regex = new RegExp(`\\b${word}\\b`, 'i');
+        return regex.test(lower);
+      });
+    });
+
+  let locality = "";
+  let parentCity = "";
+  let state: string | null = null;
+
+  if (parts.length >= 3) {
+    locality = titleCase(parts[0]);
+    parentCity = titleCase(parts[1]);
+    state = titleCase(parts[2]);
+  } else if (parts.length === 2) {
+    locality = titleCase(parts[0]);
+    parentCity = titleCase(parts[1]);
+  } else if (parts.length === 1 && parts[0]) {
+    locality = titleCase(parts[0]);
+  }
+
+  if (!locality) return null;
+
+  const normParent = (parentCity === "null" || !parentCity) ? "" : parentCity;
+
+  const existing = await prisma.city.findFirst({
+    where: {
+      name: { equals: locality, mode: "insensitive" },
+      parentCity: { equals: normParent, mode: "insensitive" }
+    }
+  });
+
+  if (existing) {
+    return existing.id;
+  }
+
+  const newCity = await prisma.city.create({
+    data: {
+      name: locality,
+      parentCity: normParent,
+      state: state || null,
+    }
+  });
+  return newCity.id;
+}
+
 export class ListingController {
   // Get listings with filters, search, and pagination
   static async getListings(req: Request, res: Response) {
@@ -155,7 +223,6 @@ export class ListingController {
           category: true,
           subCategory: true,
           city: true,
-          subCity: true,
           seller: {
             select: { username: true, role: true },
           },
@@ -229,6 +296,8 @@ export class ListingController {
         listingType,
         discountPercent,
         location,
+        latitude,
+        longitude,
         whatsappNumber,
         contactNumber,
         categoryId,
@@ -251,16 +320,7 @@ export class ListingController {
       }
 
       let finalLocation = location || "";
-      const resolvedCityId = cityId ? parseInt(cityId) : null;
-      const resolvedSubCityId = subCityId ? parseInt(subCityId) : null;
-
-      if (resolvedCityId && resolvedSubCityId) {
-        const city = await prisma.city.findUnique({ where: { id: resolvedCityId } });
-        const subCity = await prisma.subCity.findUnique({ where: { id: resolvedSubCityId } });
-        if (city && subCity) {
-          finalLocation = `${subCity.name}, ${city.name}${city.state ? `, ${city.state}` : ""}`;
-        }
-      }
+      const resolvedCityId = await resolveOrCreateLocality(finalLocation);
 
       const imagePath = imageUrls || providedImagePath || null;
 
@@ -275,8 +335,9 @@ export class ListingController {
           listingType: resolvedListingType,
           discountPercent: parseFloat(discountPercent || 0),
           location: finalLocation,
+          latitude: latitude ? parseFloat(latitude) : null,
+          longitude: longitude ? parseFloat(longitude) : null,
           cityId: resolvedCityId,
-          subCityId: resolvedSubCityId,
           whatsappNumber,
           contactNumber,
           imagePath,
@@ -291,7 +352,7 @@ export class ListingController {
       });
 
       if (listing.status === "ACTIVE") {
-        await refreshCityListingCount(listing.cityId, listing.subCityId);
+        await refreshCityListingCount(listing.cityId);
       }
 
       const io = req.app.get("io");
@@ -318,7 +379,6 @@ export class ListingController {
           category: true,
           subCategory: true,
           city: true,
-          subCity: true,
           seller: {
             select: {
               id: true,
@@ -415,9 +475,9 @@ export class ListingController {
         io.emit("listings_update", { action: "update", listing: updatedListing });
       }
 
-      await refreshCityListingCount(listing.cityId, listing.subCityId);
-      if (updatedListing.cityId !== listing.cityId || updatedListing.subCityId !== listing.subCityId) {
-        await refreshCityListingCount(updatedListing.cityId, updatedListing.subCityId);
+      await refreshCityListingCount(listing.cityId);
+      if (updatedListing.cityId !== listing.cityId) {
+        await refreshCityListingCount(updatedListing.cityId);
       }
 
       return res.json(updatedListing);
@@ -440,6 +500,8 @@ export class ListingController {
         listingType,
         discountPercent,
         location,
+        latitude,
+        longitude,
         whatsappNumber,
         contactNumber,
         categoryId,
@@ -472,20 +534,13 @@ export class ListingController {
         updatedData.priceMax = priceMax ? parseFloat(priceMax) : null;
       if (discountPercent !== undefined)
         updatedData.discountPercent = parseFloat(discountPercent);
-      if (location !== undefined) updatedData.location = location;
-      if (cityId !== undefined) updatedData.cityId = cityId ? parseInt(cityId) : null;
-      if (subCityId !== undefined) updatedData.subCityId = subCityId ? parseInt(subCityId) : null;
-
-      const finalCityId = cityId !== undefined ? (cityId ? parseInt(cityId) : null) : listing.cityId;
-      const finalSubCityId = subCityId !== undefined ? (subCityId ? parseInt(subCityId) : null) : listing.subCityId;
-
-      if (finalCityId && finalSubCityId && (cityId !== undefined || subCityId !== undefined)) {
-        const city = await prisma.city.findUnique({ where: { id: finalCityId } });
-        const subCity = await prisma.subCity.findUnique({ where: { id: finalSubCityId } });
-        if (city && subCity) {
-          updatedData.location = `${subCity.name}, ${city.name}${city.state ? `, ${city.state}` : ""}`;
-        }
+      if (location !== undefined) {
+        updatedData.location = location;
+        const resolvedCityId = await resolveOrCreateLocality(location);
+        updatedData.cityId = resolvedCityId;
       }
+      if (latitude !== undefined) updatedData.latitude = latitude ? parseFloat(latitude) : null;
+      if (longitude !== undefined) updatedData.longitude = longitude ? parseFloat(longitude) : null;
 
       if (whatsappNumber !== undefined)
         updatedData.whatsappNumber = whatsappNumber;
@@ -524,9 +579,9 @@ export class ListingController {
         await promoteListingImages(imagePaths);
       }
 
-      await refreshCityListingCount(listing.cityId, listing.subCityId);
-      if (updatedListing.cityId !== listing.cityId || updatedListing.subCityId !== listing.subCityId) {
-        await refreshCityListingCount(updatedListing.cityId, updatedListing.subCityId);
+      await refreshCityListingCount(listing.cityId);
+      if (updatedListing.cityId !== listing.cityId) {
+        await refreshCityListingCount(updatedListing.cityId);
       }
 
       return res.json(updatedListing);
@@ -562,7 +617,7 @@ export class ListingController {
       }
 
       if (listing.status === "ACTIVE") {
-        await refreshCityListingCount(listing.cityId, listing.subCityId);
+        await refreshCityListingCount(listing.cityId);
       }
 
       return res.json({ message: "Listing deleted successfully." });
