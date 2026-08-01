@@ -1,12 +1,18 @@
+import { S3Service } from "../services/s3.service";
 import { Request, Response } from "express";
 import { prisma } from "../config/db";
 import { calculateDistance } from "../utils/distance";
 import { AuthenticatedRequest } from "../middlewares/auth";
+import { queryCache } from "../utils/cache.util";
 
 export class StoreController {
   // Get nearby stores (filtered by category, sorted by distance)
   static async getStores(req: Request, res: Response) {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
       const { lat, lng, category, page, limit, location } = req.query;
 
       const userLat = parseFloat(lat as string);
@@ -49,8 +55,11 @@ export class StoreController {
         };
       });
 
-      // 2. Fetch profiles
-      const profileFilter: any = {};
+      // 2. Fetch profiles where isStore is true and category is valid
+      const profileFilter: any = {
+        isStore: true,
+        businessCategory: { notIn: ["", "General", "None"] },
+      };
       if (category) {
         profileFilter.businessCategory = { contains: category as string, mode: "insensitive" };
       }
@@ -213,13 +222,17 @@ export class StoreController {
   // Get a specific store's detail
   static async getStoreById(req: Request, res: Response) {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
       const id = parseInt(req.params.id as string, 10);
       const { lat, lng } = req.query;
 
       if (id < 0) {
         const userId = Math.abs(id);
-        const profile = await prisma.profile.findUnique({
-          where: { userId },
+        const profile = await prisma.profile.findFirst({
+          where: { userId, isStore: true },
           include: {
             reviews: {
               include: {
@@ -234,7 +247,7 @@ export class StoreController {
           },
         });
         if (!profile) {
-          return res.status(404).json({ error: "Seller profile not found" });
+          return res.status(404).json({ error: "Seller profile store not found" });
         }
 
         const userLat = parseFloat(lat as string);
@@ -529,14 +542,112 @@ export class StoreController {
     }
   }
 
-  // Delete Store
+  // Delete Store safely with verification logging (handles Static Stores, Seller Profiles, and Category 39 Store Listings)
   static async deleteStore(req: Request, res: Response) {
+    const rawId = req.params.id as string;
+    console.log(`🔍 [DELETE STORE API] Received deletion request for store ID: ${rawId}`);
     try {
-      const id = parseInt(req.params.id as string, 10);
-      await prisma.store.delete({ where: { id } });
-      return res.json({ message: "Store deleted successfully." });
+      queryCache.clear();
+      const id = parseInt(rawId, 10);
+      if (isNaN(id)) {
+        console.warn(`⚠️ [DELETE STORE API] Invalid store ID format: ${rawId}`);
+        return res.status(400).json({ error: "Invalid store ID format." });
+      }
+
+      // Case A: Seller Profile Store (negative ID: id = -userId)
+      if (id < 0) {
+        const userId = Math.abs(id);
+        console.log(`🧹 [DELETE STORE API] Deactivating seller store profile for userId: ${userId}`);
+        const profile = await prisma.profile.findUnique({ where: { userId } });
+        if (!profile) {
+          console.log(`ℹ️ [DELETE STORE API] Profile for userId ${userId} does not exist.`);
+          return res.status(200).json({ message: "Seller profile store already removed or does not exist." });
+        }
+
+        // Cleanly deactivate store profile and reset store metadata
+        await prisma.profile.update({
+          where: { userId },
+          data: {
+            isStore: false,
+            businessCategory: "",
+            businessType: null,
+            aboutSeller: "",
+          },
+        });
+
+        // Verification check
+        const checkProfile = await prisma.profile.findUnique({ where: { userId } });
+        console.log(`✅ [DELETE STORE API SUCCESS] Verified userId ${userId} isStore status: ${checkProfile?.isStore}`);
+        return res.status(200).json({ message: "Seller profile store removed successfully." });
+      }
+
+      // Case B: Static Store in Store table
+      const staticStore = await prisma.store.findUnique({
+        where: { id },
+        include: { _count: { select: { reviews: true } } },
+      });
+
+      if (staticStore) {
+        console.log(`🗑️ [DELETE STORE API] Hard deleting static store ID ${id} ("${staticStore.name}")`);
+        await prisma.$transaction(async (tx) => {
+          if (staticStore._count.reviews > 0) {
+            await tx.review.deleteMany({ where: { storeId: id } });
+          }
+          await tx.store.delete({ where: { id } });
+        });
+
+        // Verification check
+        const verifyStore = await prisma.store.findUnique({ where: { id } });
+        console.log(`✅ [DELETE STORE API SUCCESS] Verified static store ID ${id} deleted from DB: ${verifyStore === null}`);
+
+        // Async S3 cleanup
+        if (staticStore.imagePath && staticStore.imagePath.includes("/api/media/view/")) {
+          try {
+            const oldKey = staticStore.imagePath.split("/api/media/view/")[1];
+            if (oldKey) {
+              S3Service.deleteObject(oldKey).catch((s3Err: any) =>
+                console.warn(`⚠️ [DELETE STORE API] S3 cleanup warning:`, s3Err.message)
+              );
+            }
+          } catch (cleanupErr) {
+            console.warn("⚠️ [DELETE STORE API] Image key parsing error:", cleanupErr);
+          }
+        }
+
+        return res.status(200).json({ message: "Store deleted successfully." });
+      }
+
+      // Case C: Category 39 Store Listing
+      const storeListing = await prisma.listing.findUnique({ where: { id } });
+      if (storeListing) {
+        console.log(`🗑️ [DELETE STORE API] Hard deleting Category 39 store listing ID ${id} ("${storeListing.title}")`);
+        await prisma.$transaction(async (tx) => {
+          await tx.review.deleteMany({ where: { listingId: id } });
+          await tx.inquiry.deleteMany({ where: { listingId: id } });
+          await tx.listing.delete({ where: { id } });
+        });
+
+        // Verification check
+        const verifyListing = await prisma.listing.findUnique({ where: { id } });
+        console.log(`✅ [DELETE STORE API SUCCESS] Verified store listing ID ${id} deleted from DB: ${verifyListing === null}`);
+        return res.status(200).json({ message: "Store listing deleted successfully." });
+      }
+
+      // Record does not exist in any store representation
+      console.log(`ℹ️ [DELETE STORE API] Store ID ${id} not found in any store records.`);
+      return res.status(200).json({ message: "Store deleted or removed successfully." });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      console.error(`❌ [DELETE STORE API ERROR] Failed to delete store ID ${rawId}:`, error);
+
+      if (error.code === "P2025" || error.message?.includes("Record to delete does not exist") || error.message?.includes("required but not found")) {
+        return res.status(200).json({ message: "Store deleted or removed successfully." });
+      }
+      if (error.code === "P2003") {
+        return res.status(400).json({
+          error: "This store cannot be deleted because it has active related records.",
+        });
+      }
+      return res.status(500).json({ error: error.message || "Failed to delete store." });
     }
   }
 

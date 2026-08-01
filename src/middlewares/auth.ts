@@ -42,9 +42,16 @@ export const requireRole = (allowedRoles: string[]) => {
         .json({ error: "Access Denied: No Token Provided" });
     }
 
-    const userRoles = [req.user.role];
+    const rawRole = (req.user.role || "USER").toString().trim().toUpperCase();
+    const upperAllowed = allowedRoles.map((role) => role.toString().trim().toUpperCase());
 
-    const hasRole = allowedRoles.some((role) => userRoles.includes(role));
+    // If allowedRoles includes "USER", ANY authenticated user (USER, SELLER, BUYER, ADMIN, EDITOR, SEO) is allowed
+    if (upperAllowed.includes("USER")) {
+      return next();
+    }
+
+    // Check case-insensitive role match or superuser ADMIN access
+    const hasRole = upperAllowed.includes(rawRole) || rawRole === "ADMIN";
     if (!hasRole) {
       return res.status(403).json({
         error: `Forbidden: Restricted to ${allowedRoles.join(", ")} roles.`,

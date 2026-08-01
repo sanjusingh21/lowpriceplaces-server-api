@@ -459,14 +459,47 @@ export class ServiceController {
     }
   }
 
-  // Delete Service
+  // Delete Service safely with transaction, logging, and cascading review cleanup
   static async deleteService(req: Request, res: Response) {
+    const rawId = req.params.id as string;
+    console.log(`🔍 [DELETE SERVICE API] Received request to delete service ID: ${rawId}`);
     try {
-      const id = parseInt(req.params.id as string, 10);
-      await prisma.service.delete({ where: { id } });
-      return res.json({ message: "Service deleted successfully." });
+      const id = parseInt(rawId, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid service ID format." });
+      }
+
+      const existing = await prisma.service.findUnique({
+        where: { id },
+        include: { _count: { select: { reviews: true } } },
+      });
+
+      if (!existing) {
+        return res.status(200).json({ message: "Service not found or already deleted." });
+      }
+
+      await prisma.$transaction(async (tx) => {
+        if (existing._count.reviews > 0) {
+          console.log(`🧹 [DELETE SERVICE API] Cleaning up ${existing._count.reviews} reviews for service ID ${id}...`);
+          await tx.review.deleteMany({ where: { serviceId: id } });
+        }
+        await tx.service.delete({ where: { id } });
+      });
+
+      console.log(`✅ [DELETE SERVICE API] Service ID ${id} ("${existing.name}") deleted successfully.`);
+      return res.status(200).json({ message: "Service deleted successfully." });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message });
+      console.error(`❌ [DELETE SERVICE API ERROR] Failed to delete service ID ${rawId}:`, error);
+
+      if (error.code === "P2025" || error.message?.includes("Record to delete does not exist")) {
+        return res.status(200).json({ message: "Service deleted or removed successfully." });
+      }
+      if (error.code === "P2003") {
+        return res.status(400).json({
+          error: "This service cannot be deleted because it has active related records.",
+        });
+      }
+      return res.status(500).json({ error: error.message || "Failed to delete service." });
     }
   }
 

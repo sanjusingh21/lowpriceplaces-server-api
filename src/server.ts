@@ -27,7 +27,6 @@ import searchRoutes from "./routes/search.routes";
 import { syncAllCityListingCounts } from "./utils/cityCounter";
 
 const app = express();
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -56,9 +55,22 @@ app.set("io", io);
 
 const PORT = process.env.PORT || 5000;
 
-// Express Middlewares
+// Express Middlewares (CORS must run BEFORE static file routes)
 app.use(cors());
 app.use(compression());
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
+// Performance & Latency Monitor Middleware (> 500ms trigger warning)
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    if (duration > 500) {
+      console.warn(`⚠️ [SLOW REQUEST WARNING] ${req.method} ${req.originalUrl} - ${duration}ms (Status: ${res.statusCode})`);
+    }
+  });
+  next();
+});
 app.use(express.json());
 
 // Background Cleanup: Hourly cleanup of uncommitted database metadata records older than 24 hours

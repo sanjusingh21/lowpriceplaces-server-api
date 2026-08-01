@@ -325,6 +325,13 @@ export class AuthController {
           ? existingProfile.imagePath
           : null;
 
+      const isStore = Boolean(
+        businessCategory &&
+        businessCategory !== "General" &&
+        businessCategory !== "None" &&
+        businessCategory.trim() !== ""
+      );
+
       const profile = await prisma.profile.upsert({
         where: { userId: req.user.id },
         update: {
@@ -345,6 +352,7 @@ export class AuthController {
           latitude: isNaN(parsedLat as number) ? null : parsedLat,
           longitude: isNaN(parsedLng as number) ? null : parsedLng,
           imagePath,
+          isStore,
         },
         create: {
           userId: req.user.id,
@@ -365,6 +373,7 @@ export class AuthController {
           latitude: isNaN(parsedLat as number) ? null : parsedLat,
           longitude: isNaN(parsedLng as number) ? null : parsedLng,
           imagePath,
+          isStore,
         },
       });
 

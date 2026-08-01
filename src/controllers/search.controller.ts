@@ -20,7 +20,7 @@ export class SearchController {
       const lat = parseFloat(req.query.lat as string);
       const lng = parseFloat(req.query.lng as string);
 
-      const cacheKey = `search_v9_strict_filtered:${q.toLowerCase()}:${location.toLowerCase()}:${categoryId}:${minPrice}:${maxPrice}:${rating}:${sortBy}:${tab}:${page}:${limit}:${lat}:${lng}`;
+      const cacheKey = `search_v10_perf:${q.toLowerCase()}:${location.toLowerCase()}:${categoryId}:${minPrice}:${maxPrice}:${rating}:${sortBy}:${tab}:${page}:${limit}:${lat}:${lng}`;
       const cached = queryCache.get<any>(cacheKey);
       if (cached) {
         return res.json(cached);
@@ -28,7 +28,7 @@ export class SearchController {
 
       const hasCoords = !isNaN(lat) && !isNaN(lng);
 
-      // 1. Products (Listings excluding SERVICES)
+      // 1. Products Filter
       const productFilter: any = {
         status: "ACTIVE",
         listingType: { not: "SERVICES" }
@@ -45,7 +45,7 @@ export class SearchController {
         if (maxPrice !== null) productFilter.price.lte = maxPrice;
       }
 
-      // 2. Service Listings
+      // 2. Service Listings Filter
       const serviceListingFilter: any = {
         status: "ACTIVE",
         listingType: "SERVICES"
@@ -62,13 +62,13 @@ export class SearchController {
         if (maxPrice !== null) serviceListingFilter.price.lte = maxPrice;
       }
 
-      // 3. Stores
+      // 3. Stores Filter
       const storeFilter: any = {};
       if (location) {
         storeFilter.location = { contains: location, mode: "insensitive" };
       }
 
-      // If q is specified, add DB-level contains matching
+      // DB-level contains filter if q is present
       if (q) {
         const qCondition = {
           OR: [
@@ -87,16 +87,33 @@ export class SearchController {
         ];
       }
 
-      // Database Fetches
+      const listingSelect = {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        priceMax: true,
+        discountPercent: true,
+        location: true,
+        latitude: true,
+        longitude: true,
+        imagePath: true,
+        createdAt: true,
+        category: { select: { name: true } },
+        subCategory: { select: { name: true } },
+        reviews: { select: { rating: true } }
+      };
+
+      // Execute queries in parallel using Promise.all with selection & take limits
       const [dbProducts, dbServiceListings, dbStores] = await Promise.all([
-        prisma.listing.findMany({ where: productFilter, include: { category: true, subCategory: true, reviews: true } }),
-        prisma.listing.findMany({ where: serviceListingFilter, include: { category: true, subCategory: true, reviews: true } }),
-        prisma.store.findMany({ where: storeFilter, include: { reviews: true } })
+        prisma.listing.findMany({ where: productFilter, select: listingSelect, take: 80 }),
+        prisma.listing.findMany({ where: serviceListingFilter, select: listingSelect, take: 80 }),
+        prisma.store.findMany({ where: storeFilter, select: { id: true, name: true, category: true, location: true, latitude: true, longitude: true, imagePath: true, rating: true, contact: true, createdAt: true, reviews: { select: { rating: true } } }, take: 80 })
       ]);
 
-      const rawProducts = dbProducts.map(p => {
+      const rawProducts = dbProducts.map((p: any) => {
         const avg = p.reviews.length > 0
-          ? p.reviews.reduce((acc, curr) => acc + curr.rating, 0) / p.reviews.length
+          ? p.reviews.reduce((acc: number, curr: any) => acc + curr.rating, 0) / p.reviews.length
           : 5.0;
         return {
           id: p.id,
@@ -119,9 +136,9 @@ export class SearchController {
         };
       });
 
-      const rawServices = dbServiceListings.map(s => {
+      const rawServices = dbServiceListings.map((s: any) => {
         const avg = s.reviews.length > 0
-          ? s.reviews.reduce((acc, curr) => acc + curr.rating, 0) / s.reviews.length
+          ? s.reviews.reduce((acc: number, curr: any) => acc + curr.rating, 0) / s.reviews.length
           : 5.0;
         return {
           id: s.id,
@@ -145,9 +162,9 @@ export class SearchController {
         };
       });
 
-      const rawStores = dbStores.map(st => {
+      const rawStores = dbStores.map((st: any) => {
         const avg = st.reviews.length > 0
-          ? st.reviews.reduce((acc, curr) => acc + curr.rating, 0) / st.reviews.length
+          ? st.reviews.reduce((acc: number, curr: any) => acc + curr.rating, 0) / st.reviews.length
           : st.rating || 5.0;
         return {
           id: st.id,
@@ -177,7 +194,6 @@ export class SearchController {
         scoredListings = scoredListings.filter(r => r.item.rating >= rating);
       }
 
-      // Primary sort MUST ALWAYS prioritize relevance score descending so exact title matches (e.g. godown) rank #1
       scoredListings.sort((a, b) => {
         if (b.score !== a.score) {
           return b.score - a.score;
@@ -196,7 +212,6 @@ export class SearchController {
         matchReason: r.matchReason
       }));
 
-      // Compute counts per tab
       const counts = {
         all: allMappedResults.length,
         products: allMappedResults.filter(i => i.type === "product").length,
@@ -204,7 +219,6 @@ export class SearchController {
         stores: allMappedResults.filter(i => i.type === "store").length,
       };
 
-      // Filter results according to requested tab
       let tabFilteredResults = allMappedResults;
       if (tab === "products") {
         tabFilteredResults = allMappedResults.filter(i => i.type === "product");
