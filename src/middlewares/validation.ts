@@ -32,7 +32,7 @@ export const validatePresignedUpload = (req: Request, res: Response, next: NextF
   }
 
   const userId = (req as any).user?.id;
-  const userRole = (req as any).user?.role;
+  const userRole = ((req as any).user?.role || "").toString().trim().toUpperCase();
 
   // Resolve generic aliases to secure S3 folders using logged-in user context
   if (folder === "profile") {

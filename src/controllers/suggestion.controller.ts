@@ -11,19 +11,20 @@ export class SuggestionController {
         return res.json([]);
       }
 
-      const cacheKey = `suggestions_v4_titles_only:${q.toLowerCase()}`;
+      const cacheKey = `suggestions_v5_fast:${q.toLowerCase()}`;
       const cached = queryCache.get<any[]>(cacheKey);
       if (cached) {
         return res.json(cached);
       }
 
-      const queryLower = q.toLowerCase();
-
-      // Query ONLY active listing titles from database
+      // Query ONLY active listing titles matching q from database (max 30 records)
       const listings = await prisma.listing.findMany({
-        where: { status: "ACTIVE" },
+        where: {
+          status: "ACTIVE",
+          title: { contains: q, mode: "insensitive" }
+        },
         select: { id: true, title: true },
-        take: 200
+        take: 30
       });
 
       const candidateMap = new Map<string, { id: number; title: string; score: number }>();
@@ -44,10 +45,6 @@ export class SuggestionController {
 
       const candidates = Array.from(candidateMap.values());
 
-      // Sort order:
-      // 1. Exact title match (score 100 or 95)
-      // 2. Title starts with search term (score 90 or 85)
-      // 3. Partial title match / Fuzzy match (score 75-30)
       candidates.sort((a, b) => {
         if (b.score !== a.score) {
           return b.score - a.score;
@@ -55,8 +52,7 @@ export class SuggestionController {
         return a.title.localeCompare(b.title);
       });
 
-      // Format response items for client (titles only)
-      const suggestions = candidates.slice(0, 10).map(c => ({
+      const suggestions = candidates.slice(0, 8).map(c => ({
         id: c.id,
         title: c.title,
         label: c.title,

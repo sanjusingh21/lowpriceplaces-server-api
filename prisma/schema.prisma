@@ -214,6 +214,7 @@ model Profile {
   latitude          Float?
   longitude         Float?
   imagePath         String?
+  isStore           Boolean  @default(false)
   reviews           Review[]
 }
 

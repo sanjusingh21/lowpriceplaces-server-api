@@ -158,7 +158,15 @@ export class AdminController {
   // Get all seller profiles
   static async getSellerProfiles(req: Request, res: Response) {
     try {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
       const profiles = await prisma.profile.findMany({
+        where: {
+          isStore: true,
+          businessCategory: { notIn: ["", "General", "None"] },
+        },
         include: {
           user: {
             select: {
@@ -181,10 +189,19 @@ export class AdminController {
   static async deleteSellerProfile(req: Request, res: Response) {
     try {
       const id = parseInt(req.params.id as string, 10);
-      await prisma.profile.delete({
-        where: { id },
-      });
-      return res.json({ message: "Seller profile deleted successfully." });
+      const profile = await prisma.profile.findUnique({ where: { id } });
+      if (profile) {
+        await prisma.profile.update({
+          where: { id },
+          data: {
+            isStore: false,
+            businessCategory: "",
+            businessType: null,
+            aboutSeller: "",
+          },
+        });
+      }
+      return res.json({ message: "Seller profile store deleted successfully." });
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
     }
